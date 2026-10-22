@@ -73,6 +73,9 @@ def _shell_segments(command: str) -> list[str]:
     return [part.strip().lower() for part in re.split(r"(?:&&|\|\||;|\n)", str(command or "")) if part.strip()]
 
 
+_DIRECT_TEST_RE = re.compile(r"^(?:uv run\s+)?python3?(?:\s+-\S+)*\s+(?:-c\s+.*)?\S*\btest_\w+\.py\b|^(?:uv run\s+)?python3?(?:\s+-\S+)*\s+\S*_test\.py\b")
+
+
 def tool_kind(tool_name: str, args: dict[str, Any] | None = None) -> str:
     selected = str(tool_name or "").strip().lower()
     for kind, aliases in TOOL_ALIASES.items():
@@ -86,6 +89,8 @@ def tool_kind(tool_name: str, args: dict[str, Any] | None = None) -> str:
         if ">" in segment and not any(op in segment for op in (">=", "2>", "&>")):
             return "mutation"
         if any(segment == p or segment.startswith(p + " ") for p in TERMINAL_TEST_PREFIXES):
+            return "test"
+        if _DIRECT_TEST_RE.search(segment):
             return "test"
     return ""
 
@@ -176,10 +181,18 @@ def changed_paths_relevant(changed_paths: list[str] | tuple[str, ...], requested
     return any(not _looks_like_scratch(path) for path in normalized)
 
 
+_NO_TESTS_RE = re.compile(r"no tests ran|collected 0 items|\bran 0 tests?\b|\b0 passed\b|no tests (were )?(found|collected)")
+_ZERO_FAILURE_RE = re.compile(r"\b0 (failed|failures?|errors?)\b|failures?=0|errors?=0")
+
+
 def test_succeeded(status: str, result: str = "", error_message: str = "") -> bool:
     if str(status or "").strip().lower() not in {"ok", "success", "passed", "pass"}:
         return False
     text = f"{result} {error_message}".lower()
+    # A run that executed no tests proves nothing.
+    if _NO_TESTS_RE.search(text):
+        return False
+    text = _ZERO_FAILURE_RE.sub(" ", text)
     return not any(token in text for token in ("failed", "failure", "error", "traceback"))
 
 
@@ -198,7 +211,14 @@ def _same_or_related(path: str, target: str) -> bool:
     b = target.casefold().rstrip("/")
     if a == b:
         return True
-    return a.endswith("/" + b) or b.endswith("/" + a)
+    # Suffix matches are only trusted when the longer path is absolute (e.g. a
+    # sandbox prefix). A relative decoy such as "evil/app/calc.py" must not
+    # count as work on "app/calc.py".
+    if a.endswith("/" + b):
+        return a.startswith("/")
+    if b.endswith("/" + a):
+        return b.startswith("/")
+    return False
 
 
 def _looks_like_scratch(path: str) -> bool:

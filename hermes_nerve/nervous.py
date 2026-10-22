@@ -19,6 +19,7 @@ import json
 import os
 import queue
 import re
+import unicodedata
 import threading
 import time
 import uuid
@@ -59,22 +60,40 @@ _ADMISSION_RANK = {"OFF": 0, "WATCH": 1, "ON": 2}
 # admitted below WATCH, whatever the provider says or if the provider fails.
 # The floor can only raise admission; it never lowers a provider decision.
 _ADMISSION_RISK_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"\bdeploy(s|ed|ing|ment)?\b",
-    r"\bproduction\b|\bprod\b",
-    r"\b(delete|remove|purge|wipe|drop|truncate)\b",
-    r"\brm\s+-[a-z]*r",
-    r"\b(rotate|revoke)\b.{0,40}\b(key|token|secret|credential|password)s?\b",
+    r"\bdeploy(s|ed|ing|ment)?\b|\bship\b.{0,20}\b(live|prod)",
+    r"\bproduction\b|\bprod\b|\blive (site|server|database|db|cluster|environment)\b",
+    r"\b(delete|remove|purge|wipe|erase|nuke|shred|destroy|obliterate|unlink|truncate)\b",
+    r"\bdrop\s+(table|database|schema|collection|index)\b",
+    r"\brm\s+(-[a-z]*[rf]|--recursive|--force)",
+    r"\b(rotate|revoke|change|reset)\b.{0,40}\b(key|token|secret|credential|password)s?\b",
     r"\b(migrat(e|ion)|rollback|roll back|restore)\b",
-    r"\b(force[- ]push|git\s+push\s+(-f|--force)|reset\s+--hard)\b",
+    r"\bforce[- ]push|git\s+push\b.*(\s-f\b|--force|\s\+\S)|reset\s+--hard",
+    r"\b(terraform|pulumi)\s+(apply|destroy)|\bkubectl\s+(apply|delete|drain)|\bhelm\s+(install|upgrade|uninstall)",
+    r"\b(systemctl|service)\s+(stop|restart|disable|mask)|\bdocker\s+(compose\s+down|rm|system\s+prune|volume\s+rm)|\bshutdown\b|\breboot\b",
+    r"\bmkfs\b|\bdd\s+if=|\bfdisk\b|\bformat\b.{0,20}\b(disk|drive|partition)",
+    r"\bchmod\s+(-R\s+)?[0-7]*7[0-7]{0,2}\s+/|\bchown\s+-R\b",
+    r"\b(overwrite|clobber)\b",
+    r"\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh|\bcurl\b.*\|\s*(ba)?sh",
+    r"\b(pay|wire|transfer|refund|charge)\b.{0,40}(\$|\binvoice|\bpayment|\baccount|\bmoney|\bfunds)",
+    r"\b(send|email|post|publish|tweet|announce)\b.{0,40}\b(all|everyone|staff|customers|public|pypi|npm|release)\b",
 ))
+# Fold common Cyrillic/Greek look-alikes so "dеlete" (Cyrillic e) cannot slip past.
+_CONFUSABLES = str.maketrans("аеорсухіјѕкмнтвАЕОРСУХІЈЅКМНТВοαεικνρτυχΟΑΕΙΚΝΡΤΥΧ", "aeopcyxijskmhtbAEOPCYXIJSKMHTBoaeiknptyxOAEIKNPTYX")
+
+
+def _fold_for_risk(text: str) -> str:
+    folded = unicodedata.normalize("NFKC", text).translate(_CONFUSABLES)
+    # Collapse letter-by-letter spacing such as "d-e-l-e-t-e" or "d e l e t e".
+    return re.sub(r"\b(?:\w[-_. ]){3,}\w\b", lambda m: re.sub(r"[-_. ]", "", m.group(0)), folded)
 
 
 def admission_risk_floor(prompt: str) -> str:
     """Return the minimum admission level implied by deterministic risk markers ("" if none)."""
-    text = str(prompt or "")
-    for pattern in _ADMISSION_RISK_PATTERNS:
-        if pattern.search(text):
-            return "WATCH"
+    raw = str(prompt or "")
+    for text in (raw, _fold_for_risk(raw)):
+        for pattern in _ADMISSION_RISK_PATTERNS:
+            if pattern.search(text):
+                return "WATCH"
     return ""
 CONTROL_CHOICES = ["CONTINUE", "GATHER_EVIDENCE", "RETRY", "REPLAN", "ESCALATE"]
 SUPERVISION_MODES = {"shadow", "correct_next", "precommit"}
