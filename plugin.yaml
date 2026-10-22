@@ -37,6 +37,8 @@ config_schema:
   typesafe_model: {type: str, default: "jev-latest"}
   opencode_model: {type: str, default: "jev-1.13"}
   timeout_seconds: {type: float, default: 10.0}
+  breaker_failure_threshold: {type: int, default: 2, description: "Consecutive provider connection failures before Nerve fails fast for breaker_cooldown_seconds."}
+  breaker_cooldown_seconds: {type: float, default: 60.0, description: "How long to skip provider calls after the breaker trips."}
   reflex_backend: {type: str, default: "jev", description: "Decision backend: jev, laya, openjev, or shadow."}
   reflex_laya_base_url: {type: str, default: "http://127.0.0.1:8765", description: "Laya sidecar base URL. Loopback HTTP or HTTPS only."}
   reflex_laya_model: {type: str, default: "convaiinnovations/laya-typed-decisions", description: "Expected fixed Laya checkpoint identity exposed by the sidecar."}

@@ -76,6 +76,8 @@ def _register_legacy(ctx):
         typesafe_model=ctx.get_config("typesafe_model", "jev-latest"),
         opencode_model=ctx.get_config("opencode_model", "jev-1.13"),
         timeout=ctx.get_config("timeout_seconds", 10.0),
+        breaker_threshold=ctx.get_config("breaker_failure_threshold", 2),
+        breaker_cooldown=ctx.get_config("breaker_cooldown_seconds", 60.0),
     )
     reflex.configure(
         backend=ctx.get_config("reflex_backend", "jev"),
@@ -325,6 +327,8 @@ def _register_profile(ctx):
             typesafe_model=get("typesafe_model","jev-latest"),
             opencode_model=get("opencode_model","jev-1.13"),
             timeout=get("timeout_seconds",10.0),
+            breaker_threshold=get("breaker_failure_threshold",2),
+            breaker_cooldown=get("breaker_cooldown_seconds",60.0),
         )
         backend=get("reflex_backend","jev")
         if policy.profile!="legacy" and backend=="shadow" and not policy.enabled("shadow_testing"):
