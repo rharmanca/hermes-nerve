@@ -420,8 +420,10 @@ class NervousSystem:
                 return
         prompt = str(payload.get("user_message") or "")
         floor = admission_risk_floor(prompt) if self._config.admission_risk_floor else ""
-        engine = self._engine_factory()
         try:
+            # Engine construction is inside the guard: a missing key or invalid
+            # endpoint is a provider failure and must still honour the floor.
+            engine = self._engine_factory()
             result = self._admission_decide(engine, prompt)
         except Exception as exc:
             # Provider failure must not silently disable supervision for risky turns.
