@@ -72,6 +72,17 @@ class AdmissionRiskFloorTests(unittest.TestCase):
             self.assertEqual(self.admit(system, "Run the production deploy"), "WATCH")
             self.assertIn("admission_floor_fallback", (Path(td) / "n.jsonl").read_text())
 
+    def test_engine_construction_failure_applies_floor(self):
+        with tempfile.TemporaryDirectory() as td:
+            def broken_factory():
+                raise RuntimeError("TYPESAFE_API_KEY is not configured")
+            system = nervous.NervousSystem(engine_factory=broken_factory)
+            system.configure(enabled=True, admission_enabled=False, mode="shadow")
+            env = patch.dict(os.environ, {"HERMES_NERVE_NERVOUS_EVENTS": str(Path(td) / "n.jsonl")}, clear=False)
+            env.start()
+            self.addCleanup(env.stop)
+            self.assertEqual(self.admit(system, "delete the old backups"), "WATCH")
+
     def test_provider_failure_benign_prompt_stays_pending(self):
         with tempfile.TemporaryDirectory() as td:
             system = self.make_system(td)
