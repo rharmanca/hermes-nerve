@@ -6,6 +6,7 @@ with task-relative progress.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import PurePosixPath
 from typing import Any
@@ -199,6 +200,19 @@ _ZERO_FAILURE_RE = re.compile(r"\b0 (failed|failures?|errors?)\b|failures?=0|err
 def test_succeeded(status: str, result: str = "", error_message: str = "") -> bool:
     if str(status or "").strip().lower() not in {"ok", "success", "passed", "pass"}:
         return False
+    result = str(result or "")
+    try:
+        payload = json.loads(result) if result.lstrip().startswith("{") else None
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and ("output" in payload or "exit_code" in payload):
+        # Hermes terminal results are JSON envelopes; an empty "error": null key is not a failure.
+        exit_code = payload.get("exit_code")
+        if exit_code not in (None, 0, "0"):
+            return False
+        if payload.get("error"):
+            return False
+        result = str(payload.get("output") or "")
     text = f"{result} {error_message}".lower()
     # A run that executed no tests proves nothing.
     if _NO_TESTS_RE.search(text):

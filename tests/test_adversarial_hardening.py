@@ -19,6 +19,12 @@ class AdversarialHardeningTests(unittest.TestCase):
         for out in ("no tests ran", "collected 0 items", "Ran 0 tests\nOK"):
             self.assertFalse(P.test_succeeded("ok", out), out)
 
+    def test_hermes_terminal_json_envelope(self):
+        ok = '{"output": "1 passed in 0.01s", "exit_code": 0, "error": null}'
+        self.assertTrue(P.test_succeeded("ok", ok))
+        self.assertFalse(P.test_succeeded("ok", '{"output": "1 failed", "exit_code": 1, "error": null}'))
+        self.assertFalse(P.test_succeeded("ok", '{"output": "no tests ran", "exit_code": 0, "error": null}'))
+
     def test_zero_failed_is_a_pass(self):
         self.assertTrue(P.test_succeeded("ok", "1 passed, 0 failed"))
 
