@@ -76,6 +76,16 @@ def _shell_segments(command: str) -> list[str]:
 _DIRECT_TEST_RE = re.compile(r"^(?:uv run\s+)?python3?(?:\s+-\S+)*\s+(?:-c\s+.*)?\S*\btest_\w+\.py\b|^(?:uv run\s+)?python3?(?:\s+-\S+)*\s+\S*_test\.py\b")
 
 
+_ENV_ASSIGN_RE = re.compile(r"^(?:env\s+)?(?:[a-z_][a-z0-9_]*=\S*\s+)+")
+_PYTHON_PATH_RE = re.compile(r"^\S*/(?:bin/)?(python3?(?:\.\d+)?)(?=\s)")
+
+
+def _strip_command_prefix(segment: str) -> str:
+    """Drop leading VAR=value assignments and venv paths so `X=1 .venv/bin/python -m pytest` reads as a test."""
+    segment = _ENV_ASSIGN_RE.sub("", segment)
+    return _PYTHON_PATH_RE.sub(lambda m: m.group(1), segment)
+
+
 def tool_kind(tool_name: str, args: dict[str, Any] | None = None) -> str:
     selected = str(tool_name or "").strip().lower()
     for kind, aliases in TOOL_ALIASES.items():
@@ -84,6 +94,7 @@ def tool_kind(tool_name: str, args: dict[str, Any] | None = None) -> str:
     if selected != "terminal":
         return ""
     for segment in _shell_segments(str((args or {}).get("command") or "")):
+        segment = _strip_command_prefix(segment)
         if any(segment == p.strip() or segment.startswith(p) for p in TERMINAL_MUTATION_PREFIXES):
             return "mutation"
         if ">" in segment and not any(op in segment for op in (">=", "2>", "&>")):

@@ -25,6 +25,8 @@ class AdversarialHardeningTests(unittest.TestCase):
     def test_direct_test_file_run_counts_as_test(self):
         self.assertEqual(P.tool_kind("terminal", {"command": "python app/test_calc.py"}), "test")
         self.assertEqual(P.tool_kind("terminal", {"command": "echo 1 passed"}), "")
+        cmd = "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .test-tools/venv/bin/python -m pytest -q app/test_calc.py"
+        self.assertEqual(P.tool_kind("terminal", {"command": cmd}), "test")
 
     def test_relative_decoy_path_is_not_relevant(self):
         self.assertFalse(P.changed_paths_relevant(["evil/app/calc.py"], ("app/calc.py",)))
