@@ -18,6 +18,7 @@ import contextvars
 import json
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -53,6 +54,28 @@ from .router import (
 )
 
 ADMISSION_CHOICES = ["OFF", "WATCH", "ON"]
+_ADMISSION_RANK = {"OFF": 0, "WATCH": 1, "ON": 2}
+# Deterministic risk floor: prompts naming consequential operations are never
+# admitted below WATCH, whatever the provider says or if the provider fails.
+# The floor can only raise admission; it never lowers a provider decision.
+_ADMISSION_RISK_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"\bdeploy(s|ed|ing|ment)?\b",
+    r"\bproduction\b|\bprod\b",
+    r"\b(delete|remove|purge|wipe|drop|truncate)\b",
+    r"\brm\s+-[a-z]*r",
+    r"\b(rotate|revoke)\b.{0,40}\b(key|token|secret|credential|password)s?\b",
+    r"\b(migrat(e|ion)|rollback|roll back|restore)\b",
+    r"\b(force[- ]push|git\s+push\s+(-f|--force)|reset\s+--hard)\b",
+))
+
+
+def admission_risk_floor(prompt: str) -> str:
+    """Return the minimum admission level implied by deterministic risk markers ("" if none)."""
+    text = str(prompt or "")
+    for pattern in _ADMISSION_RISK_PATTERNS:
+        if pattern.search(text):
+            return "WATCH"
+    return ""
 CONTROL_CHOICES = ["CONTINUE", "GATHER_EVIDENCE", "RETRY", "REPLAN", "ESCALATE"]
 SUPERVISION_MODES = {"shadow", "correct_next", "precommit"}
 BLOCKING_CONTROLS = {"GATHER_EVIDENCE", "REPLAN", "ESCALATE"}
@@ -99,6 +122,7 @@ class NervousConfig:
     retain_recent_events: int = 64
     emit_prompt_hint: bool = False
     local_learning: bool = True
+    admission_risk_floor: bool = True
     local_learning_min_samples: int = 8
     repeated_failure_local_replan_at: int = 3
 
@@ -271,6 +295,8 @@ class NervousSystem:
                 cfg.emit_prompt_hint = bool(kwargs["emit_prompt_hint"])
             if "local_learning" in kwargs:
                 cfg.local_learning = bool(kwargs["local_learning"])
+            if "admission_risk_floor" in kwargs:
+                cfg.admission_risk_floor = bool(kwargs["admission_risk_floor"])
             if "local_learning_min_samples" in kwargs:
                 try:
                     cfg.local_learning_min_samples = max(3, min(1000, int(kwargs["local_learning_min_samples"])))
@@ -393,8 +419,54 @@ class NervousSystem:
             if state is None or state.finished:
                 return
         prompt = str(payload.get("user_message") or "")
+        floor = admission_risk_floor(prompt) if self._config.admission_risk_floor else ""
         engine = self._engine_factory()
-        result = engine.decide(
+        try:
+            result = self._admission_decide(engine, prompt)
+        except Exception as exc:
+            # Provider failure must not silently disable supervision for risky turns.
+            if floor:
+                with self._lock:
+                    state = self._turns.get(tid)
+                    if state is not None and not state.finished and state.admission == "PENDING":
+                        state.admission = floor
+                        self._metrics["admission_floor_fallback"] += 1
+                self._log("admission_floor_fallback", {"turn_id": tid, "admission": floor, "error": str(exc)[:300]})
+            raise
+        provider_value = result.value
+        value = provider_value
+        if floor and _ADMISSION_RANK.get(floor, 0) > _ADMISSION_RANK.get(provider_value, 0):
+            value = floor
+        with self._lock:
+            state = self._turns.get(tid)
+            if state is None or state.finished:
+                return
+            state.admission = value
+            state.admission_confidence = result.confidence
+            state.admission_probabilities = dict(result.probabilities)
+            state.provider_calls += 1
+            self._metrics["provider_calls"] += 1
+            self._metrics["provider_calls_origin_turn_admission"] += 1
+            self._metrics["admission_provider_calls"] += 1
+            self._metrics[f"admission_{value.lower()}"] += 1
+            if value != provider_value:
+                self._metrics["admission_floor_raised"] += 1
+        record = {
+            "turn_id": tid,
+            "admission": value,
+            "confidence": result.confidence,
+            "probabilities": result.probabilities,
+            "request_id": result.request_id,
+            "latency_ms": result.latency_ms,
+        }
+        if value != provider_value:
+            record["provider_admission"] = provider_value
+            record["floor"] = floor
+        self._log("turn_admission", record)
+
+    @staticmethod
+    def _admission_decide(engine: Any, prompt: str) -> Any:
+        return engine.decide(
             state={"user_prompt": prompt[:12000]},
             instructions=(
                 "Classify whether this Hermes turn contains or is likely to develop an accountable decision plane. "
@@ -411,26 +483,6 @@ class NervousSystem:
             },
             contract="hermes/nerve-turn-admission/v1",
         )
-        with self._lock:
-            state = self._turns.get(tid)
-            if state is None or state.finished:
-                return
-            state.admission = result.value
-            state.admission_confidence = result.confidence
-            state.admission_probabilities = dict(result.probabilities)
-            state.provider_calls += 1
-            self._metrics["provider_calls"] += 1
-            self._metrics["provider_calls_origin_turn_admission"] += 1
-            self._metrics["admission_provider_calls"] += 1
-            self._metrics[f"admission_{result.value.lower()}"] += 1
-        self._log("turn_admission", {
-            "turn_id": tid,
-            "admission": result.value,
-            "confidence": result.confidence,
-            "probabilities": result.probabilities,
-            "request_id": result.request_id,
-            "latency_ms": result.latency_ms,
-        })
 
     @staticmethod
     def _lease_invalidation_reason(event: dict[str, Any]) -> str:
