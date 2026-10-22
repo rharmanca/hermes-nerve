@@ -77,7 +77,7 @@ _DIRECT_TEST_RE = re.compile(r"^(?:uv run\s+)?python3?(?:\s+-\S+)*\s+(?:-c\s+.*)
 
 
 _ENV_ASSIGN_RE = re.compile(r"^(?:env\s+)?(?:[a-z_][a-z0-9_]*=\S*\s+)+")
-_PYTHON_PATH_RE = re.compile(r"^\S*/(?:bin/)?(python3?(?:\.\d+)?)(?=\s)")
+_PYTHON_PATH_RE = re.compile(r"^\S*/(?:bin/)?(python3?(?:\.\d+)?|pytest|py\.test)(?=\s|$)")
 
 
 def _strip_command_prefix(segment: str) -> str:
