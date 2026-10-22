@@ -142,6 +142,12 @@ def mutation_paths(tool_name: str, args: dict[str, Any] | None = None) -> tuple[
             path = _normalize_path(raw)
             if path and path not in paths:
                 paths.append(path)
+        # Hermes' native patch tool uses V4A envelopes ("*** Update File: <path>").
+        for raw in re.findall(r"(?m)^\*\*\*\s+(?:Update|Add|Delete) File:\s*(.+?)\s*$|^\*\*\*\s+Move to:\s*(.+?)\s*$", patch):
+            for candidate in raw:
+                path = _normalize_path(candidate)
+                if path and path not in paths:
+                    paths.append(path)
     return tuple(paths[:32])
 
 
