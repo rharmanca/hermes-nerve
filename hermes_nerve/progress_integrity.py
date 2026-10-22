@@ -84,7 +84,9 @@ _PYTHON_PATH_RE = re.compile(r"^\S*/(?:bin/)?(python3?(?:\.\d+)?|pytest|py\.test
 def _strip_command_prefix(segment: str) -> str:
     """Drop leading VAR=value assignments and venv paths so `X=1 .venv/bin/python -m pytest` reads as a test."""
     segment = _ENV_ASSIGN_RE.sub("", segment)
-    return _PYTHON_PATH_RE.sub(lambda m: m.group(1), segment)
+    segment = _PYTHON_PATH_RE.sub(lambda m: m.group(1), segment)
+    # Interpreter flags such as -B/-u/-I before "-m pytest" do not change what runs.
+    return re.sub(r"^(python3?(?:\.\d+)?)((?:\s+-[a-ln-z]+)+)(?=\s+-m\s)", r"\1", segment)
 
 
 def tool_kind(tool_name: str, args: dict[str, Any] | None = None) -> str:
