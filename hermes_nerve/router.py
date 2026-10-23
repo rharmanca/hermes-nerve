@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .toolrisk import classify_tool
+
 CRITICAL_TYPES = {
     "COMPLETION_CANDIDATE",
     "CONSEQUENTIAL_ACTION",
@@ -175,20 +177,17 @@ def _bounded_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def infer_tool_risk(tool_name: str, status: str = "") -> tuple[float, list[str]]:
-    name = (tool_name or "").lower()
-    reasons: list[str] = []
-    if status.lower() in {"error", "failed", "blocked", "failure"}:
-        reasons.append("tool-failure")
-        return 0.72, reasons
-    if any(token in name for token in MUTATING_HINTS):
-        reasons.append("mutating-tool")
-        return 0.68, reasons
-    if any(token in name for token in READ_ONLY_HINTS):
-        reasons.append("read-only-tool")
-        return 0.10, reasons
-    reasons.append("unknown-tool-risk")
-    return 0.36, reasons
+def infer_tool_risk(tool_name: str, status: str = "", args: dict[str, Any] | None = None) -> tuple[float, list[str]]:
+    """Deterministic risk prior for a tool observation.
+
+    Failures dominate. Otherwise the shared classifier judges the tool by name
+    and, for ``terminal``/``execute_code``, by the shape of its command or code
+    body. Reasons are fixed labels and never contain argument content.
+    """
+    if (status or "").lower() in {"error", "failed", "blocked", "failure"}:
+        return 0.72, ["tool-failure"]
+    classification = classify_tool(tool_name, args)
+    return classification.risk, [classification.reason]
 
 
 def assess_event(
@@ -256,7 +255,9 @@ def assess_event(
         reasons.append("high-risk")
 
     if event_type == "TOOL_RESULT":
-        tool_risk, tool_reasons = infer_tool_risk(str(event.get("tool_name") or ""), str(event.get("status") or ""))
+        state = event.get("state") if isinstance(event.get("state"), dict) else {}
+        tool_args = state.get("args") if isinstance(state.get("args"), dict) else None
+        tool_risk, tool_reasons = infer_tool_risk(str(event.get("tool_name") or ""), str(event.get("status") or ""), tool_args)
         score += 0.20 * tool_risk
         reasons.extend(tool_reasons)
         if tool_risk <= 0.12 and not bool(event.get("contradiction")):

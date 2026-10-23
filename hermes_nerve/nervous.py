@@ -887,7 +887,7 @@ class NervousSystem:
                 "origin_tool": tool_name,
                 "origin_event_id": event_id,
             }
-        risk, risk_reasons = infer_tool_risk(tool_name, status)
+        risk, risk_reasons = infer_tool_risk(tool_name, status, args)
         result = str(kwargs.get("result") or "")
         error_message = str(kwargs.get("error_message") or "")
         is_failure = status.lower() in {"error", "failed", "blocked", "failure"} or bool(error_message)

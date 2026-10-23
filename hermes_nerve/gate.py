@@ -11,7 +11,6 @@ from __future__ import annotations
 import math
 import os
 import re
-import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -20,6 +19,13 @@ from .engine import DecisionEngine, DecisionResult
 from .paths import hermes_home
 from .jsonl import append_jsonl, read_jsonl
 from .privacy import canonical_hash, redact
+from .toolrisk import (
+    SAFE_GIT_SUBCOMMANDS,
+    SHELL_META_RE,
+    SIMPLE_READ_ONLY_COMMANDS,
+    strict_read_only_terminal,
+    terminal_command,
+)
 
 _SKIP_PREFIXES = ("nerve_", "jev_")
 _DEFAULT_READ_ONLY_TOOLS = frozenset({
@@ -37,17 +43,13 @@ _DEFAULT_READ_ONLY_TOOLS = frozenset({
     "mnemosyne_graph_query",
     "mnemosyne_sync_status",
     "spotify_search",
+    "skill_view",
+    "skills_list",
 })
-_SIMPLE_READ_ONLY_COMMANDS = frozenset({
-    "pwd", "ls", "cat", "head", "tail", "wc", "stat", "du", "df", "file",
-    "readlink", "basename", "dirname", "realpath", "which", "whereis", "whoami",
-    "id", "uname", "uptime", "free", "ps", "printenv",
-    "grep", "rg", "jq",
-})
-_SAFE_GIT_SUBCOMMANDS = frozenset({
-    "status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "describe", "grep", "blame",
-})
-_SHELL_META_RE = re.compile(r"(?:&&|\|\||[;|><`]|\$\()")
+# Shared with the router so bypass and scoring agree on what "read-only" means.
+_SIMPLE_READ_ONLY_COMMANDS = SIMPLE_READ_ONLY_COMMANDS
+_SAFE_GIT_SUBCOMMANDS = SAFE_GIT_SUBCOMMANDS
+_SHELL_META_RE = SHELL_META_RE
 
 _configured_mode: str | None = None
 _configured_min_confidence: float | None = None
@@ -202,45 +204,12 @@ def _clean_probabilities(probabilities: Any) -> dict[str, float]:
 
 
 def _terminal_command(args: dict[str, Any]) -> str:
-    for key in ("command", "cmd", "script"):
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+    return terminal_command(args)
 
 
 def _read_only_terminal(command: str) -> bool:
     """Return True only for deliberately narrow, obvious read-only shell shapes."""
-    if not command or _SHELL_META_RE.search(command):
-        return False
-    try:
-        parts = shlex.split(command, posix=True)
-    except ValueError:
-        return False
-    if not parts:
-        return False
-
-    # Do not bypass environment-prefixed or path-qualified executables.
-    # `PATH=/tmp ls` can resolve attacker-controlled code and `LD_PRELOAD=... ls`
-    # can execute arbitrary code before the nominally read-only program starts.
-    if "=" in parts[0] or "/" in parts[0]:
-        return False
-
-    executable = parts[0]
-    if executable in _SIMPLE_READ_ONLY_COMMANDS:
-        if executable == "rg":
-            # ripgrep --pre/--pre-glob can execute an external preprocessor.
-            if any(arg == "--pre" or arg.startswith("--pre=") or arg == "--pre-glob" or arg.startswith("--pre-glob=") for arg in parts[1:]):
-                return False
-        return True
-    if executable == "git" and len(parts) >= 2:
-        if parts[1] not in _SAFE_GIT_SUBCOMMANDS:
-            return False
-        # diff/show/log/blame can be configured to invoke external helpers.
-        if any(arg in {"--ext-diff", "--textconv"} or arg.startswith("--ext-diff=") or arg.startswith("--textconv=") for arg in parts[2:]):
-            return False
-        return True
-    return False
+    return strict_read_only_terminal(command)
 
 
 def bypass_reason(tool_name: str, args: dict[str, Any]) -> str | None:
