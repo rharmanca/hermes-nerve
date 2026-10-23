@@ -262,6 +262,9 @@ class TurnState:
     verified_test_passes: int = 0
     progress_challenge_issued: bool = False
     environment_failure_actions: deque = field(default_factory=lambda: deque(maxlen=8))
+    # Interventions the agent never saw (shadow mode / below challenge confidence) whose
+    # usefulness can still be labeled from what the agent did next. Fingerprints only.
+    shadow_pending_outcomes: list[dict[str, Any]] = field(default_factory=list)
 
 
 class NervousSystem:
@@ -863,6 +866,72 @@ class NervousSystem:
         self._tasks.put(("assess", {"turn_id": state.turn_id, "event": clean, "router": route.as_dict()}, contextvars.copy_context()))
         return {"accepted": True, "forwarded": True, "admission": admission, "router": route.as_dict()}
 
+    # ---- shadow outcome labeling -------------------------------------------------
+    # Local learning consumes ``outcome`` rows labeled ``useful_disagreement``. Nobody
+    # hand-labels decisions in shadow mode, so interventions the agent never saw are
+    # labeled from the agent's own next steps (a clean counterfactual): the same failure
+    # recurring means "do not just continue" was useful; the same action later succeeding
+    # means it was not. Anything else stays unlabeled. Rows carry fingerprints and ids only.
+
+    def _register_shadow_outcome(self, tid: str, decision_row: dict[str, Any], *, intervention: bool, challenge_delivered: bool) -> None:
+        if not intervention or challenge_delivered:
+            return
+        fail_fp = str(decision_row.get("failure_fingerprint") or "")
+        if not fail_fp:
+            return
+        with self._lock:
+            state = self._turns.get(tid)
+            if state is None or state.finished:
+                return
+            episode = state.failure_episodes.get(fail_fp)
+            state.shadow_pending_outcomes.append({
+                "decision_id": str(decision_row.get("decision_id") or ""),
+                "event_id": str(decision_row.get("event_id") or ""),
+                "decision_type": str(decision_row.get("decision_type") or ""),
+                "objective_type": str(decision_row.get("objective_type") or ""),
+                "jev_decision": str(decision_row.get("jev_decision") or ""),
+                "failure_fingerprint": fail_fp,
+                "action_fingerprint": str(decision_row.get("action_fingerprint") or (episode.action_fingerprint if episode else "")),
+                "count_at_decision": int(episode.count) if episode else 0,
+            })
+            self._metrics["shadow_outcomes_pending"] += 1
+
+    def _resolve_shadow_outcomes(self, state: TurnState, *, failure_fingerprint: str = "", failure_count: int = 0, succeeded_action: str = "") -> None:
+        """Called under ``self._lock``; writes labels for pending interventions settled by this event."""
+        if not state.shadow_pending_outcomes:
+            return
+        remaining: list[dict[str, Any]] = []
+        resolved: list[tuple[dict[str, Any], bool, str]] = []
+        for pending in state.shadow_pending_outcomes:
+            if failure_fingerprint and pending["failure_fingerprint"] == failure_fingerprint and failure_count > pending["count_at_decision"]:
+                resolved.append((pending, True, "failure-recurred"))
+            elif succeeded_action and pending["action_fingerprint"] and pending["action_fingerprint"] == succeeded_action:
+                resolved.append((pending, False, "same-action-succeeded"))
+            else:
+                remaining.append(pending)
+        state.shadow_pending_outcomes = remaining
+        for pending, useful, reason in resolved:
+            row = {
+                "record_type": "outcome",
+                "type": "OUTCOME",
+                "turn_id": state.turn_id,
+                "event_id": pending["event_id"],
+                "decision_id": pending["decision_id"],
+                "decision_type": pending["decision_type"],
+                "objective_type": pending["objective_type"],
+                "jev_decision": pending["jev_decision"],
+                "useful_disagreement": useful,
+                "outcome_source": "shadow-auto",
+                "outcome_reason": reason,
+                "failure_fingerprint": pending["failure_fingerprint"],
+                "action_fingerprint": pending["action_fingerprint"],
+                "timestamp": self._now(),
+            }
+            self._outcomes.append(row)
+            self._metrics["shadow_outcomes_labeled"] += 1
+            self._metrics["shadow_outcomes_useful" if useful else "shadow_outcomes_not_useful"] += 1
+            self._log("shadow_outcome", row)
+
     def observe_tool_call(self, **kwargs: Any) -> dict[str, Any]:
         tool_name = str(kwargs.get("tool_name") or "")
         status = str(kwargs.get("status") or "")
@@ -932,6 +1001,8 @@ class NervousSystem:
                         proposed_action_fingerprint=action_fp,
                     )
                     state.active_control = None
+                if not is_failure:
+                    self._resolve_shadow_outcomes(state, succeeded_action=action_fp)
         if is_failure and state is not None:
             exit_code = kwargs.get("exit_code", kwargs.get("returncode"))
             fail_fp = failure_fingerprint(
@@ -955,6 +1026,7 @@ class NervousSystem:
                 episode.count += 1
                 episode.last_event_id = event_id
                 repeat_count = episode.count
+                self._resolve_shadow_outcomes(state, failure_fingerprint=fail_fp, failure_count=repeat_count)
                 if repeat_count >= 2:
                     self._metrics["repeated_failures_seen"] += 1
                 if deterministic_reason and repeat_count == 1:
@@ -1233,6 +1305,7 @@ class NervousSystem:
                 "stale": False,
             }
             self._outcomes.append(decision_row)
+            self._register_shadow_outcome(tid, decision_row, intervention=intervention, challenge_delivered=should_challenge and self._config.mode != "shadow")
 
             if should_challenge:
                 directive = ControlDirective(
@@ -1515,6 +1588,10 @@ class NervousSystem:
                 self._record_control_lifecycle(state, state.active_control, stage="expired", disposition="turn-ended")
                 state.active_control = None
             state.finished = True
+            unresolved = len(state.shadow_pending_outcomes)
+            if unresolved:
+                self._metrics["shadow_outcomes_unresolved"] += unresolved
+                state.shadow_pending_outcomes = []
             completion = {
                 "turn_id": state.turn_id,
                 "session_id": state.session_id,
@@ -1526,6 +1603,7 @@ class NervousSystem:
                 "provider_errors": state.provider_errors,
                 "challenges": state.challenge_count,
                 "failure_episodes": len(state.failure_episodes),
+                "shadow_outcomes_unresolved": unresolved,
                 "response_sha256": canonical_hash(assistant_response),
             }
             self._metrics["turns_finished"] += 1
