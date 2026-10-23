@@ -1,8 +1,6 @@
 # Nerve
 
-> **Development status:** current `main` identifies as `0.3.2.dev0`. The latest stable release is `v0.3.1`, published from its reviewed release commit. `main` contains post-0.3.1 development work and is not the same tree as the stable release. Hermes catalog installs follow exact reviewed commit-SHA pins and may lag `main` until a catalog SHA-bump PR is reviewed and merged.
-
-Nerve is an asynchronous System-1 supervisory layer for Hermes Agent. `0.3.1` is the stable maintenance release for the profile-aware `0.3.0` line: it concentrates bug fixes, hardening, completion/retry integrity, configuration correctness, setup QOL, and the explicitly approved opt-in ask-only Action Gate while preserving v0.2.3-compatible Legacy behavior when no profile is selected. Other `0.3.2` feature work remains on the development line. Nerve/Reflex remains a watchdog and forecaster; the main Hermes orchestrator/reviewer owns final stop/continue authority. The core plugin remains dependency-free and model runtimes stay in sidecars.
+Nerve is an asynchronous System-1 supervisory layer for Hermes Agent. `0.3.1` is the stable maintenance release for the profile-aware `0.3.0` line: it concentrates bug fixes, hardening, completion/retry integrity, configuration correctness, and setup QOL, plus the explicitly approved opt-in ask-only Action Gate from #41 with #44 hardening. Other 0.3.2 feature tracks remain separate. Shared Context remains supported but is opt-in until HermesContextBus has a public install source. Nerve/Reflex remains a watchdog and forecaster; the main Hermes orchestrator/reviewer owns final stop/continue authority. The core plugin remains dependency-free and model runtimes stay in sidecars.
 
 
 ## Dev17 — open backend release matrix
@@ -109,7 +107,7 @@ Nerve deliberately does **not** own canonical task status, dependencies, retries
 From the extracted final package:
 
 ```bash
-cd nerve-v0.3.1
+cd nerve-v0.3.0
 bash scripts/install_dev17_profile.sh abtest-jev-dev17
 ```
 
@@ -204,7 +202,7 @@ For selected profiles, disabled modules are omitted from the Hermes model/runtim
 
 ### Shared Context
 
-Shared Context is an optional external integration. Nerve does **not** vendor HermesContextBus. Fat Cat and Operator enable the module by default; Lean and Marie Kondo keep it off pending factory A/B evidence.
+Shared Context is an optional external integration. Nerve does **not** vendor HermesContextBus. Because HermesContextBus is not currently published through a public install source, Shared Context is OFF by default in all named profiles. Users with an explicit local HermesContextBus checkout can opt in and install it manually.
 
 To inspect integration availability:
 
