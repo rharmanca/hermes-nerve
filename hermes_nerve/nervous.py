@@ -51,8 +51,10 @@ from .progress_integrity import (
 from .router import (
     assess_event,
     decision_state_fingerprint,
+    failure_category,
     failure_fingerprint,
     infer_tool_risk,
+    safe_tool_name,
     tool_action_fingerprint,
 )
 
@@ -265,6 +267,10 @@ class TurnState:
     # Interventions the agent never saw (shadow mode / below challenge confidence) whose
     # usefulness can still be labeled from what the agent did next. Fingerprints only.
     shadow_pending_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    # Privacy-safe per-turn telemetry: tool identifiers and fixed failure labels only.
+    tool_counts: dict[str, int] = field(default_factory=dict)
+    failure_categories: dict[str, int] = field(default_factory=dict)
+    tool_failures: int = 0
 
 
 class NervousSystem:
@@ -457,7 +463,7 @@ class NervousSystem:
                     if state is not None and not state.finished and state.admission == "PENDING":
                         state.admission = floor
                         self._metrics["admission_floor_fallback"] += 1
-                self._log("admission_floor_fallback", {"turn_id": tid, "admission": floor, "error": str(exc)[:300], "error_category": _client.error_category(exc)})
+                self._log("admission_floor_fallback", {"turn_id": tid, "admission": floor, "error": type(exc).__name__, "error_category": _client.error_category(exc)})
             raise
         provider_value = result.value
         value = provider_value
@@ -794,6 +800,13 @@ class NervousSystem:
             "turn_id": state.turn_id,
             "event_id": clean["event_id"],
             "type": clean["type"],
+            "tool_name": clean.get("log_tool_name") or safe_tool_name(clean.get("tool_name")),
+            "status": str(clean.get("status") or "").strip().lower()[:32],
+            "failure_category": str(clean.get("failure_category") or ""),
+            "failure_repeat_count": int(clean.get("failure_repeat_count") or 0),
+            "deterministic_failure": bool(clean.get("deterministic_failure")),
+            "risk": round(float(clean.get("risk") or 0.0), 3),
+            "risk_reasons": list(clean.get("risk_reasons") or []),
             "decision_state_fingerprint": semantic_fp,
             **route.as_dict(),
             "historical_useful_disagreement_probability": learned_probability,
@@ -970,11 +983,19 @@ class NervousSystem:
         fail_fp = ""
         repeat_count = 0
         deterministic_reason = _deterministic_failure_reason(status, result, error_message) if is_failure else ""
+        exit_code = kwargs.get("exit_code", kwargs.get("returncode"))
+        fail_category = failure_category(status=status, result=result, error_message=error_message, exit_code=exit_code) if is_failure else ""
+        log_tool_name = safe_tool_name(tool_name)
         env_failure = environment_failure(tool_name, args, status, result, error_message)
         state = self._resolve_turn(turn_id=str(kwargs.get("turn_id") or ""), session_id=str(kwargs.get("session_id") or ""))
         if state is not None:
             with self._lock:
                 state.tool_actions += 1
+                state.tool_counts[log_tool_name] = state.tool_counts.get(log_tool_name, 0) + 1
+                if is_failure:
+                    state.tool_failures += 1
+                    label = fail_category or "other"
+                    state.failure_categories[label] = state.failure_categories.get(label, 0) + 1
                 kind = tool_kind(tool_name, args)
                 if kind == "mutation":
                     state.mutation_attempts += 1
@@ -1060,6 +1081,8 @@ class NervousSystem:
             "repeated_failure": repeat_count >= 2,
             "deterministic_failure": bool(deterministic_reason),
             "deterministic_failure_reason": deterministic_reason,
+            "failure_category": fail_category,
+            "log_tool_name": log_tool_name,
             "failure_repeat_count": repeat_count,
             "failure_fingerprint": fail_fp,
             "action_fingerprint": action_fp,
@@ -1353,13 +1376,21 @@ class NervousSystem:
                     if disagreement:
                         self._metrics["high_confidence_disagreements"] += 1
                     self._recent_challenges.append(challenge.as_dict())
-                self._log("challenge", challenge.as_dict())
+                self._log("challenge", {
+                    **challenge.as_dict(),
+                    "tool_name": event.get("log_tool_name") or safe_tool_name(event.get("tool_name")),
+                    "event_type": str(event.get("type") or ""),
+                    "failure_category": str(event.get("failure_category") or ""),
+                })
             else:
                 self._metrics["agreements_or_silent"] += 1
                 self._log("assessment_silent", {
                     "decision_id": decision_id,
                     "turn_id": tid,
                     "event_id": event.get("event_id"),
+                    "tool_name": event.get("log_tool_name") or safe_tool_name(event.get("tool_name")),
+                    "event_type": str(event.get("type") or ""),
+                    "failure_category": str(event.get("failure_category") or ""),
                     "hermes_decision": hermes_decision,
                     "jev_decision": jev_decision,
                     "confidence": confidence,
@@ -1374,7 +1405,14 @@ class NervousSystem:
                     state.provider_errors += 1
                 self._metrics["provider_errors"] += 1
                 self._metrics[f"provider_errors_{category}"] += 1
-            self._log("assessment_error", {"turn_id": tid, "event_id": event.get("event_id"), "error": str(exc)[:500], "error_category": category})
+            self._log("assessment_error", {
+                "turn_id": tid,
+                "event_id": event.get("event_id"),
+                "tool_name": event.get("log_tool_name") or safe_tool_name(event.get("tool_name")),
+                "event_type": str(event.get("type") or ""),
+                "error": type(exc).__name__,
+                "error_category": category,
+            })
         finally:
             batch_payload = None
             with self._lock:
@@ -1604,6 +1642,9 @@ class NervousSystem:
                 "challenges": state.challenge_count,
                 "failure_episodes": len(state.failure_episodes),
                 "shadow_outcomes_unresolved": unresolved,
+                "tool_counts": dict(state.tool_counts),
+                "tool_failures": state.tool_failures,
+                "failure_categories": dict(state.failure_categories),
                 "response_sha256": canonical_hash(assistant_response),
             }
             self._metrics["turns_finished"] += 1

@@ -116,6 +116,56 @@ def tool_action_fingerprint(tool_name: str, args: dict[str, Any] | None = None) 
     })
 
 
+FAILURE_CATEGORIES = frozenset({
+    "", "blocked", "permission", "not-found", "invalid-argument", "timeout", "network", "rate-limit",
+    "syntax", "import", "test-failure", "nonzero-exit", "other",
+})
+# Ordered: the first matching family wins. Only fixed labels ever leave this function, so the
+# category is safe for event logs and metrics even when the underlying text is sensitive.
+_FAILURE_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("blocked", ("blocked:", "approval required", "requires approval", "not allowed", "not authorized", "unauthorized")),
+    ("permission", ("permission denied", "operation not permitted", "access denied", "eacces", "read-only file system")),
+    ("rate-limit", ("rate limit", "too many requests", "429")),
+    ("timeout", ("timed out", "timeout")),
+    ("network", ("connection reset", "connection refused", "connection failed", "name or service not known", "temporarily unavailable", "service unavailable", "network is unreachable", "econnrefused", "econnreset")),
+    ("not-found", ("no such file or directory", "file not found", "not found", "does not exist", "enoent", "filenotfounderror")),
+    ("invalid-argument", ("invalid argument", "invalid option", "unrecognized argument", "unknown option", "missing required", "validation error", "schema validation", "usage:")),
+    ("import", ("modulenotfounderror", "importerror", "no module named", "cannot import name")),
+    ("syntax", ("syntaxerror", "invalid syntax", "unexpected token", "parse error", "indentationerror")),
+    ("test-failure", ("failed tests/", "assertionerror", "tests failed", "failures=", "failed (", "test failed", "::test_")),
+)
+
+
+def failure_category(*, status: str = "", result: str = "", error_message: str = "", exit_code: Any = None) -> str:
+    """Coarse, fixed-vocabulary label for a tool failure (empty string when not a failure)."""
+    normalized_status = str(status or "").strip().lower()
+    text = " ".join((str(error_message or ""), str(result or "")))[:4000].lower()
+    failed = normalized_status in {"error", "failed", "failure", "blocked", "denied"}
+    try:
+        code = int(exit_code) if exit_code is not None and str(exit_code).strip() != "" else None
+    except (TypeError, ValueError):
+        code = None
+    if code not in (None, 0):
+        failed = True
+    if not failed:
+        return ""
+    if normalized_status == "blocked":
+        return "blocked"
+    for label, markers in _FAILURE_FAMILIES:
+        if any(marker in text for marker in markers):
+            return label
+    if code not in (None, 0):
+        return "nonzero-exit"
+    return "other"
+
+
+def safe_tool_name(tool_name: Any) -> str:
+    """Tool identifier normalized for logs: lowercase, [a-z0-9_.-] only, max 80 chars, never empty."""
+    text = str(tool_name or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_.\-]+", "_", text).strip("_")
+    return text[:80] or "unknown"
+
+
 def failure_fingerprint(
     *,
     tool_name: str,
