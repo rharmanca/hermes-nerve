@@ -10,7 +10,10 @@ from hermes_nerve.progress_integrity import (
     requested_paths,
     tool_kind,
 )
-from tests.test_nervous import ScriptedEngine
+try:
+    from tests.test_nervous import ScriptedEngine
+except ModuleNotFoundError:  # `unittest discover -s tests` imports top-level module names
+    from test_nervous import ScriptedEngine
 
 
 class ProgressIntegrityQolTests(unittest.TestCase):
