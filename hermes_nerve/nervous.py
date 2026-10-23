@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .engine import DecisionEngine
+from . import client as _client  # breaker state + error categories; read module attrs live (configure() rebinds them)
 from .jsonl import append_jsonl
 from .outcomes import HistoricalOutcomeModel, OutcomeStore
 from .paths import hermes_home
@@ -453,7 +454,7 @@ class NervousSystem:
                     if state is not None and not state.finished and state.admission == "PENDING":
                         state.admission = floor
                         self._metrics["admission_floor_fallback"] += 1
-                self._log("admission_floor_fallback", {"turn_id": tid, "admission": floor, "error": str(exc)[:300]})
+                self._log("admission_floor_fallback", {"turn_id": tid, "admission": floor, "error": str(exc)[:300], "error_category": _client.error_category(exc)})
             raise
         provider_value = result.value
         value = provider_value
@@ -1293,12 +1294,14 @@ class NervousSystem:
                     "latency_ms": latency_ms,
                 })
         except Exception as exc:
+            category = _client.error_category(exc)
             with self._lock:
                 state = self._turns.get(tid)
                 if state:
                     state.provider_errors += 1
                 self._metrics["provider_errors"] += 1
-            self._log("assessment_error", {"turn_id": tid, "event_id": event.get("event_id"), "error": str(exc)[:500]})
+                self._metrics[f"provider_errors_{category}"] += 1
+            self._log("assessment_error", {"turn_id": tid, "event_id": event.get("event_id"), "error": str(exc)[:500], "error_category": category})
         finally:
             batch_payload = None
             with self._lock:
@@ -1688,6 +1691,18 @@ class NervousSystem:
             "confidence_calibration": outcome.get("confidence_calibration", {}),
         }
 
+    @staticmethod
+    def _provider_breaker() -> dict[str, Any]:
+        """Privacy-safe circuit-breaker snapshot: counters and timings only, no provider text."""
+        snapshot = dict(_client.breaker_state())
+        return {
+            "open": bool(snapshot.get("open")),
+            "failures": int(snapshot.get("failures") or 0),
+            "open_for_s": round(float(snapshot.get("open_for_s") or 0.0), 1),
+            "threshold": int(_client.BREAKER_THRESHOLD),
+            "cooldown_seconds": float(_client.BREAKER_COOLDOWN),
+        }
+
     def report(self, *, recent_limit: int = 5, include_recent: bool = False, include_outcomes: bool = False) -> dict[str, Any]:
         limit = max(0, min(20, int(recent_limit or 0)))
         with self._lock:
@@ -1711,6 +1726,7 @@ class NervousSystem:
                 "active_turns": active,
                 "metrics": dict(sorted(self._metrics.items())),
                 "admissions": admissions,
+                "provider_breaker": self._provider_breaker(),
                 "quality_metrics": self.quality_metrics(),
                 "path": str(self._log_path()),
                 "execution": execution_provenance(live_provider_call=False, transport="local-nervous-system"),

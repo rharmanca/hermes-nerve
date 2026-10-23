@@ -1,6 +1,6 @@
 """Dependency-free Jev client supporting OpenRouter, TypeSafe direct, and OpenCode Zen."""
 from __future__ import annotations
-import json, os, threading, time, urllib.error, urllib.request
+import http.client, json, os, re, threading, time, urllib.error, urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 OPENROUTER_BASE_URL="https://openrouter.ai"; OPENROUTER_MODEL="typesafe/jev-1.13"; OPENROUTER_PATH="/api/alpha/decisions"
@@ -27,7 +27,7 @@ def reset_breaker()->None:
 def _breaker_check()->None:
  with _breaker_lock:
   remaining=_breaker_open_until-time.monotonic()
-  if remaining>0: raise JevError(f"Jev provider circuit open after {_breaker_failures} consecutive connection failures; retrying in {remaining:.0f}s")
+  if remaining>0: raise JevConnectionError(f"Jev provider circuit open after {_breaker_failures} consecutive connection failures; retrying in {remaining:.0f}s")
 def _breaker_record(ok:bool)->None:
  global _breaker_failures,_breaker_open_until
  with _breaker_lock:
@@ -35,6 +35,26 @@ def _breaker_record(ok:bool)->None:
   _breaker_failures+=1
   if _breaker_failures>=BREAKER_THRESHOLD: _breaker_open_until=time.monotonic()+BREAKER_COOLDOWN
 class JevError(RuntimeError): pass
+class JevConnectionError(JevError):
+ """Transport-level failure (DNS, connect, TLS, timeout, reset, truncated body) or an open
+ circuit. Only this class feeds the circuit breaker; HTTP status errors and malformed
+ responses mean the provider answered and are deliberately excluded."""
+_TRANSPORT_FAILURES=(urllib.error.URLError,OSError,http.client.HTTPException)
+def error_category(exc:BaseException)->str:
+ """Stable, short, privacy-safe label for a provider failure. Never echoes message text,
+ response bodies or request content, so it is safe to put in event logs and metrics."""
+ text=str(exc or "")
+ if isinstance(exc,JevConnectionError) or text.startswith("Jev API connection failed") or text.startswith("Jev provider circuit open"):
+  if "circuit open" in text: return "circuit-open"
+  return "timeout" if "timed out" in text.lower() or "timeout" in text.lower() else "connection"
+ if isinstance(exc,JevError):
+  match=re.match(r"Jev API returned HTTP (\d{3})",text)
+  if match: return f"http-{match.group(1)}"
+  if text.startswith("Jev API transport failed"): return "transport-error"
+  if "invalid JSON" in text or "invalid response tuple" in text or "missing answers" in text: return "invalid-response"
+  if "is not configured" in text or "provider" in text.lower() and ("api key" in text.lower() or "must be" in text.lower()): return "no-provider"
+  return "jev-error"
+ return "other"
 
 def _resolve_secret(name:str)->str:
  """Read a provider key the way the Hermes host does.
@@ -102,16 +122,26 @@ class JevClient:
    with urllib.request.urlopen(request,timeout=timeout) as response: return int(response.status),response.read(),{str(k).lower():str(v) for k,v in response.headers.items()}
   except urllib.error.HTTPError as exc:
    detail=exc.read().decode("utf-8","replace")[:500]; raise JevError(f"Jev API returned HTTP {exc.code}: {detail}"+(_credit_hint(exc.code) if self.provider_kind=="openrouter" else "")) from exc
-  except (urllib.error.URLError,TimeoutError) as exc: raise JevError(f"Jev API connection failed: {exc}") from exc
+  except (urllib.error.URLError,TimeoutError) as exc: raise JevConnectionError(f"Jev API connection failed: {exc}") from exc
+  except _TRANSPORT_FAILURES as exc: raise JevConnectionError(f"Jev API connection failed: {type(exc).__name__}: {exc}") from exc
  def system_one(self,*,state:Any,questions:dict[str,dict[str,Any]],model:str|None=None)->JevResponse:
   if not questions: raise JevError("At least one question is required")
   payload={"state":state,"model":model or self.model,"questions":questions}; body=json.dumps(payload,separators=(",",":"),ensure_ascii=False,default=str).encode()
   headers={"Authorization":f"Bearer {self.api_key}","Accept":"application/json","Content-Type":"application/json","User-Agent":"hermes-nerve/0.3.2.dev0"}
   _breaker_check(); started=time.monotonic()
   try: raw_result=self._transport(self.base_url+self.path,headers,body,self.timeout)
+  except JevConnectionError:
+   _breaker_record(False); raise
   except JevError as exc:
+   # Legacy transports signal outages by message text; keep honouring that contract.
    if "connection failed" in str(exc): _breaker_record(False)
    raise
+  except _TRANSPORT_FAILURES as exc:
+   # Custom transports may surface raw socket/TLS/HTTP failures; they are provider outages too.
+   _breaker_record(False); raise JevConnectionError(f"Jev API connection failed: {type(exc).__name__}: {exc}") from exc
+  except Exception as exc:
+   # A bug in a transport is not a provider outage: surface it as JevError without tripping the breaker.
+   raise JevError(f"Jev API transport failed: {type(exc).__name__}: {exc}") from exc
   _breaker_record(True); latency_ms=(time.monotonic()-started)*1000
   if not isinstance(raw_result,tuple) or len(raw_result) not in {2,3}: raise JevError("Jev transport returned an invalid response tuple")
   status,raw=raw_result[0],raw_result[1]; response_headers=raw_result[2] if len(raw_result)==3 and isinstance(raw_result[2],dict) else {}; response_headers={str(k).lower():str(v) for k,v in response_headers.items()}
