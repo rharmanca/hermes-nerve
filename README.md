@@ -2,6 +2,8 @@
 
 Nerve is an asynchronous System-1 supervisory layer for Hermes Agent. `0.3.1` is the stable maintenance release for the profile-aware `0.3.0` line: it concentrates bug fixes, hardening, completion/retry integrity, configuration correctness, and setup QOL, plus the explicitly approved opt-in ask-only Action Gate from #41 with #44 hardening. Other 0.3.2 feature tracks remain separate. Shared Context remains supported but is opt-in until HermesContextBus has a public install source. Nerve/Reflex remains a watchdog and forecaster; the main Hermes orchestrator/reviewer owns final stop/continue authority. The core plugin remains dependency-free and model runtimes stay in sidecars.
 
+> **Fork branch status (2026-10-23).** This checkout is `deploy/robweb-20261023`: a deployment snapshot based on the `v0.3.1` release tree plus fork fixes, with a `0.3.2.dev0` plugin-manifest label. For a new profile, start watch-only with `nervous_mode=shadow` and `work_supervision_mode=shadow` (leave `gate_mode=off`); review [`CHANGELOG.md`](CHANGELOG.md) and [`docs/SHADOW_MODE_OPERATIONS.md`](docs/SHADOW_MODE_OPERATIONS.md) before enabling enforcement.
+
 
 ## Dev17 — open backend release matrix
 
@@ -195,6 +197,28 @@ The first menu is intentionally compact:
 ```
 
 Profile state is persisted atomically at `$HERMES_HOME/nerve/profile.json`. Full Configuration includes a manifest-driven advanced editor for typed sidecar overrides; re-selecting the same profile preserves those overrides, while `--reset` clears them deliberately. Advanced Hermes plugin settings can still also be supplied through the existing Hermes configuration surface. A missing profile sidecar and missing `nerve_profile` setting enter a dedicated v0.2.3 Legacy registration path. The exact 16-tool/9-hook/context-engine/headless behavior is regression-pinned, including the v0.2.3 `nerve_auto_kill` compatibility fallback and pre-LLM first-result semantics. `nerve_auto_kill` is compatibility state only; economic stop authority remains with the orchestrator/reviewer.
+
+### Current supervision and provider settings
+
+These settings live under `plugins.entries.nerve.settings` (not the legacy `hermes-nerve` block):
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `nervous_mode` | `correct_next` | Nervous-system mode. **The default steers**: it can inject challenges and control leases. Set `shadow` for watch-only observation; `precommit` is the other intervening mode. |
+| `nervous_admission_risk_floor` | `true` | Keep turns containing deterministic risky-operation markers at least `WATCH`, including on provider/engine failure. |
+| `nervous_local_learning` | `true` | Allow labeled local shadow outcomes to adjust router sensitivity without another remote model. |
+| `nervous_local_learning_min_samples` | `8` | Minimum labeled outcomes before the local historical model affects routing. |
+| `timeout_seconds` | `10.0` | Jev provider request timeout, bounded by the client. |
+| `breaker_failure_threshold` | `2` | Consecutive connection failures before the provider circuit opens. |
+| `breaker_cooldown_seconds` | `60.0` | Seconds for which the open circuit fails fast. |
+| `reflex_shadow_backend` | `laya` | Backend paired with the authoritative Jev path when `reflex_backend=shadow`; `laya` or `openjev`. |
+| `reflex_shadow_async` | `true` | Run the paired shadow request asynchronously so Jev remains latency-authoritative. |
+| `reflex_shadow_log` | empty | Optional JSONL path for paired Reflex shadow records. |
+| `gate_mode` | `off` | Action Gate mode: `off`, `advisory` (log only), `enforce`, or `ask-only`. |
+| `work_supervision_mode` | `advisory` | Kanban work supervision mode: `shadow`, `advisory`, or `enforce`. `advisory` may deliver high-confidence WATCH/REPLAN/BLOCK advice to a bound Kanban worker; `shadow` records only. |
+| `context_ledger_enabled` | `true` | Context governor ledger. Stores recoverable tool results **with content and arguments** locally in `nerve/context-ledger.jsonl` (owner-only). Set `false` if the profile must not keep a second copy of tool output. |
+
+For a watch-only nervous system, set `nervous_mode=shadow`. For an observe-only trial of the whole plugin, also set `work_supervision_mode=shadow` and leave `gate_mode=off` (fully inert; gate-hook observations are still recorded) or use `gate_mode=advisory` (log-only verdicts, one extra provider call per gated tool). See [`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md) for provider selection and [`docs/SHADOW_MODE_OPERATIONS.md`](docs/SHADOW_MODE_OPERATIONS.md) for a profile runbook.
 
 ### Hard-OFF modules
 

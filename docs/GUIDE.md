@@ -1,5 +1,7 @@
 # Nerve v0.2.1.2 guide
 
+> **Fork branch `deploy/robweb-20261023` readers:** this guide describes the v0.2.1.2 architecture, which still applies. For what changed on the fork branch — shadow-mode guarantees, the admission risk floor, content-aware tool risk, provider breaker and failure categories, shadow outcome labeling, and content-free telemetry — read [`NERVOUS_SYSTEM.md`](NERVOUS_SYSTEM.md) and [`SHADOW_MODE_OPERATIONS.md`](SHADOW_MODE_OPERATIONS.md). Hermes terminal results whose JSON carries `"error": null` are now read as successes, and common test launchers (`uv run`, `uvx`, `poetry run`, `pipenv run`, `pdm run`, `hatch run`, `conda run`, virtualenv/interpreter-prefixed `pytest`) are recognised as test runs; see `CHANGELOG.md`.
+
 ## What changed
 
 Jev is no longer primarily a synchronous gate. The recommended architecture is an asynchronous decision nervous system:

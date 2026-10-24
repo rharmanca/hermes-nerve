@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased — fork branch `deploy/robweb-20261023` (`0.3.2.dev0` manifest on the `0.3.1` release tree)
+
+This section records the fork changes carried by the current deployment-snapshot branch. The existing `0.3.1` release section below remains the release baseline.
+
+### Supervision and admission
+
+- Add a deterministic admission-risk floor: prompts containing risky-operation markers remain at least `WATCH` when `nervous_admission_risk_floor` is enabled (default `true`), including when engine construction itself fails. Provider failures are emitted as categorized `admission_floor_fallback` events rather than silently disabling supervision. (#71)
+- Keep the synchronous Action Gate fail-safe: `advisory` fails open, while `enforce` and `ask-only` require human approval with rule key `nerve:provider-unavailable` when the provider is unavailable.
+- Make `nervous_mode=shadow` observe-only. Would-be completion blocks are logged, but no challenge, tool-control lease, or completion steering is injected. (#67)
+
+### Content-aware tool risk
+
+- Classify tool calls from command and code content as well as tool identity. Terminal pipelines, wrappers, nested shells, heredocs, substitutions, redirects, database statements, service CLIs, and `curl`/`wget` read-versus-write flags are inspected conservatively; deep or unparseable input becomes `ambiguous`.
+- Use fixed risk priors: `read_only` 0.10, `network_read` 0.30, `unknown` 0.36, `ambiguous` 0.40, and `mutating` 0.68. Gate bypasses remain deliberately narrower than router scoring.
+
+### Provider client
+
+- Add typed `JevConnectionError` handling for transport outages and a circuit breaker with defaults of two consecutive connection failures, a 60-second cooldown, and a 10-second request timeout. The plugin settings are `breaker_failure_threshold`, `breaker_cooldown_seconds`, and `timeout_seconds`.
+- Keep HTTP status errors and malformed responses out of the breaker. Expose fixed privacy-safe categories such as `circuit-open`, `timeout`, `connection`, `http-402`, `transport-error`, `invalid-response`, `no-provider`, `jev-error`, and `other` in provider diagnostics/events.
+- Select TypeSafe automatically when it is the only configured provider key; retain OpenRouter as the default when both keys are present. An OpenRouter HTTP 402 includes a direct-TypeSafe configuration hint. (#69)
+
+### Shadow mode and local learning
+
+- Track shadow interventions by safe action/failure fingerprints. A recurring matching failure labels the intervention `useful_disagreement=true`; a later successful matching action labels it `false`; unresolved interventions are counted at turn completion. Each decision is labeled at most once.
+- Emit `shadow_outcome` rows and maintain `shadow_outcomes_labeled`, `shadow_outcomes_useful`, `shadow_outcomes_not_useful`, and `shadow_outcomes_unresolved` metrics. `nervous_local_learning` and `nervous_local_learning_min_samples` control whether labeled rows calibrate the local router.
+
+### Telemetry and privacy
+
+- Make the structured Nerve event rows self-describing and content-free: normalized tool names, fixed failure categories, risk/reasons, repeat counts, per-turn tool counts, per-turn failure categories, and hashes/identifiers replace prompts, arguments, outputs, and raw provider error text. Assessment error rows retain the exception class and fixed category only; the legacy exceptional `worker_error` diagnostic remains a documented truncated-error caveat.
+
+### Progress integrity
+
+- Recognize Hermes terminal JSON with `"error": null` as a successful result when its exit status is successful; reject masked exit status and whole-word failure signals.
+- Read target paths from Hermes V4A patch envelopes as well as unified diffs, recognize environment/virtualenv-prefixed pytest and launcher forms (`uv`, `uvx`, `poetry`, `pipenv`, `pdm`, `hatch`, `conda`, and related wrappers), and ignore interpreter flags before `-m pytest`. (#66, #72, #73)
+
+### Work and autobind
+
+- Only pin `HERMES_KANBAN_TASK_ID` when the value came from dispatcher-provided canonical task identity; hook-local/session identifiers no longer create a false dispatcher binding. (#60, #68)
+
+### Tests and tooling
+
+- Keep unittest discovery compatible with top-level modules and add focused regression coverage for content-aware risk, admission fallback, provider outages/breaker behavior, shadow completion/outcome labeling, content-free telemetry, progress-integrity parsing, V4A paths, and autobind identity.
+- The content-aware tool-risk, typed-outage, shadow-outcome, and telemetry additions are fork changes and are not yet proposed upstream. Public upstream references for the other fixes include #60, #65, PRs #66, #67, #68, #69, #71, #72, and #73.
+
+### Known issues on this branch
+
+- `tests/test_shadow_outcome_labeling.py::test_learned_probability_feeds_router_after_min_samples` can error during temporary-directory cleanup (late background ledger write); assertions pass. Fix pending.
+- Gateway processes still record one `autobind_task_missing` diagnostic per tool call in `work-supervision.sqlite3` when the hook-local fallback identifier is not a canonical Kanban task (#60 follow-up).
+- The context governor ledger (`context-ledger.jsonl`, default on) stores recoverable tool results with content locally; set `context_ledger_enabled=false` where that is not acceptable. See `docs/SHADOW_MODE_OPERATIONS.md`.
+- `plugin.yaml` label `0.3.2.dev0` vs `scripts/verify_release.py` expectation `0.3.1` (pre-existing).
+
+### Branch provenance
+
+This is a deployment-snapshot branch: commit `b2b6831` replaced the working tree with the installed `v0.3.1` release tree plus fork fixes. It is not a rebase of upstream `main`'s post-0.3.1 development line. The plugin manifest says `0.3.2.dev0` while `scripts/verify_release.py` still expects `0.3.1`; that pre-existing version-label mismatch is intentionally not changed here.
+
 ## 0.3.1 — stable maintenance, hardening, and QOL
 
 Stable promotion of the qualified `v0.3.1rc2` tree.

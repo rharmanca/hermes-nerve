@@ -1,6 +1,6 @@
-# Jev Nervous System (v0.2.1.2)
+# Jev Nervous System (fork branch `deploy/robweb-20261023`; manifest `0.3.2.dev0` on the `v0.3.1` tree)
 
-Nerve v0.2.1.2 keeps Jev off Hermes' normal critical path. Hermes remains the reasoning and execution engine; Jev is an asynchronous decision supervisor.
+Nerve on this branch keeps Jev off Hermes' normal critical path. Hermes remains the reasoning and execution engine; Jev is an asynchronous decision supervisor. The branch is a deployment snapshot of the `v0.3.1` release tree with fork changes, not a rebase of upstream `main`'s post-0.3.1 development line.
 
 ## Turn lifecycle
 
@@ -69,6 +69,49 @@ Modes:
 - `correct_next`: inject current high-confidence disagreement into the next tool-result turn context.
 - `precommit`: retains asynchronous operation but lets `pre_verify` consume an already-arrived completion challenge. It never synchronously waits for Jev.
 
+## Shadow mode guarantees
+
+`nervous_mode=shadow` runs the nervous-system admission, router, and assessment paths for observation, but it does not steer the Hermes turn:
+
+- provider assessments and local routing still run, so the profile can measure what supervision would have done;
+- high-confidence disagreements are recorded, but `inject_challenge()` returns no challenge and `before_tool_call()` does not enforce a control lease;
+- a would-be completion-integrity block is written as `progress_completion_blocked` with `shadow=true`, increments the shadow metric, and returns no continuation instruction;
+- no already-completed or irreversible action is undone, and shadow mode does not mean that no provider calls occur.
+
+For a profile-wide watch-only trial, pair `nervous_mode=shadow` with `gate_mode=advisory` and `work_supervision_mode=shadow`. `gate_mode=advisory` records gate observations without blocking; the work-supervision setting keeps the separate Kanban surface from enforcing controls.
+
+## Admission risk floor
+
+When `nervous_admission_risk_floor=true` (default), deterministic risky-operation markers in the user turn impose a minimum `WATCH` admission. A provider result below that floor is raised to `WATCH`. If engine construction or admission assessment fails, the same floor is applied before the failure is recorded, so a provider outage cannot silently turn a risky turn into `OFF`. The fallback row is `admission_floor_fallback` and carries the exception class plus a fixed provider error category.
+
+This floor is separate from the synchronous Action Gate. In `enforce` and `ask-only` gate modes, a provider failure returns an approval request with rule key `nerve:provider-unavailable`; `advisory` mode fails open.
+
+## Content-aware tool risk
+
+`hermes_nerve.toolrisk` classifies command and code content, not only the tool name. The router uses the resulting risk prior; the gate shares the conservative terminal parser for bypass decisions. It examines pipelines/chains and wrappers, nested shells, heredocs, substitutions, redirects, interpreter/code bodies, database statements, service CLIs, and network-client write flags. Deep or unparseable input is `ambiguous`, not silently read-only. The fixed categories and scores are:
+
+| Category | Risk prior |
+|---|---:|
+| `read_only` | 0.10 |
+| `network_read` | 0.30 |
+| `unknown` | 0.36 |
+| `ambiguous` | 0.40 |
+| `mutating` | 0.68 |
+
+Named read-only tools such as `skill_view`, `skills_list`, `web_search`, and `read_file` remain in the read-only set, but content-aware inspection takes precedence for terminal and code tools.
+
+## Provider failures and circuit breaker
+
+The provider client uses typed `JevConnectionError` for transport-level outages, including DNS/connect failures, timeouts, TLS/resets, truncated transport failures, and an open circuit. The defaults are:
+
+- `timeout_seconds`: 10 seconds;
+- `breaker_failure_threshold`: 2 consecutive connection failures;
+- `breaker_cooldown_seconds`: 60 seconds.
+
+These settings are configurable in `plugins.entries.nerve.settings`. The breaker fails fast while open, resets after a successful call, and does not trip for HTTP status errors or malformed responses because those mean the provider answered. `error_category()` emits fixed labels such as `circuit-open`, `timeout`, `connection`, `http-402`, `transport-error`, `invalid-response`, `no-provider`, `jev-error`, and `other`; raw provider text is not used as the event category.
+
+`nervous.report()` exposes a privacy-safe `provider_breaker` snapshot with `open`, `failures`, `open_for_s`, `threshold`, and `cooldown_seconds`. Assessment failures also increment provider-error metrics and write categorized `assessment_error` rows, while the nervous worker continues supervising locally.
+
 ## Staleness and reversibility
 
 Events may carry `state_version` and `decision_version`. A challenge is deliverable only while the relevant decision state is current. Late opinions remain receipts, not commands. Completed irreversible actions are never automatically undone.
@@ -79,11 +122,30 @@ Supervision is scoped to the turn, not a wall-clock timeout. A two-hour turn wit
 
 ## Local learning
 
-`OutcomeStore` can record labeled decision outcomes. After `nervous_local_learning_min_samples`, a tiny local historical model can calibrate router sensitivity from observed usefulness. It does not add another remote LLM.
+`OutcomeStore` can record labeled decision outcomes. After `nervous_local_learning_min_samples`, a tiny local historical model can calibrate router sensitivity from observed usefulness. It does not add another remote LLM. Set `nervous_local_learning=false` to keep the outcome ledger without feeding it back into routing.
+
+## Shadow outcome labeling
+
+A shadow intervention is stored by safe failure and action fingerprints rather than prompt or tool content. The intervention is eligible for an automatic counterfactual label only when the agent did not see a delivered challenge:
+
+- the same failure fingerprint recurs after the intervention: `useful_disagreement=true`, reason `failure-recurred`;
+- the same action later succeeds: `useful_disagreement=false`, reason `same-action-succeeded`;
+- neither signal settles the intervention before turn completion: no outcome row is written and `shadow_outcomes_unresolved` is incremented.
+
+Each decision is labeled at most once. Resolved rows are written to the profile outcome ledger and as `shadow_outcome` events with fingerprints, IDs, decision labels, and the reason only. `nervous_local_learning_min_samples` (default `8`) is the minimum number of labeled rows before the local model uses them.
+
+## Decision and telemetry event fields
+
+Nerve event rows use schema `hermes-nerve-nervous/v2` and include a timestamp plus a self-describing `kind`. Router rows carry normalized `tool_name`, status, fixed `failure_category`, `failure_repeat_count`, `deterministic_failure`, numeric `risk`, fixed `risk_reasons`, a safe decision-state fingerprint, and routing score/reasons. Assessment rows carry the safe tool/event type, decision labels, confidence, request ID, and latency; `assessment_error` rows carry the exception class and `error_category`. `turn_complete` adds `admission`, provider-call/error counts, challenge count, `tool_counts`, `tool_failures`, `failure_categories`, and a response hash. Shadow outcome rows carry only IDs, labels, fingerprints, and resolution reason.
+
+Use `nervous.report()` for current-process metrics and the profile outcome ledger for durable outcome totals. Its `provider_breaker` object reports `open`, `failures`, `open_for_s`, `threshold`, and `cooldown_seconds` without provider text.
 
 ## Privacy
 
-The nervous system should receive compact structured state rather than full transcripts. Tool-result previews are bounded by `nervous_event_preview_chars`, and existing recursive secret-redaction remains available at provider boundaries. Raw roleplay/chat transcripts are not required for event supervision.
+Nerve's structured router, admission, assessment, turn-complete, completion-observation, and shadow-outcome rows are content-free. They do not write prompt text, tool arguments, tool outputs, or raw provider error text. Turn boundaries use `prompt_sha256` and `response_sha256`; router/assessment rows use normalized tool names, fixed categories, risk/reasons, repeat counts, safe fingerprints, and aggregate labels. Assessment exception telemetry records the exception class and fixed privacy-safe category only. The bounded structured state used for an assessment is a provider request concern; it is not copied into the event ledger. The exceptional background `worker_error` diagnostic still records a truncated exception string; treat that legacy path as a caveat rather than as aggregate telemetry.
+
+The content-free guarantee covers the nervous-system ledgers (`nervous-events.jsonl`, `decision-outcomes.jsonl`), gate events, and receipts. Other Nerve modules keep their own local stores with different contracts: the context governor's `context-ledger.jsonl` records recoverable tool results **including their content and arguments** (owner-only file mode) so curated context can be rehydrated later, and the work-supervision SQLite store records Kanban contracts, evidence previews, and diagnostics. Disable the context ledger with `context_ledger_enabled=false` (or turn the governor off entirely with `context_curation_mode=off` and `context_engine_register=false`) when a profile must not keep a second copy of tool output. See [`SHADOW_MODE_OPERATIONS.md`](SHADOW_MODE_OPERATIONS.md) for a per-file inventory.
+
 
 ## 0.2.1 repeated-failure control lease
 

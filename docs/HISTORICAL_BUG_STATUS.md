@@ -26,3 +26,15 @@ Development-line hardening added after those reports:
 - v0.2.2.dev4: provider-cost scoping excludes local-only decisions, gate JSONL joins the shared persistence path, GitHub Actions/dependency maintenance is current, and CI includes Python 3.14.
 
 The source of truth for current behavior is the current branch code plus its exact GitHub Actions result. Historical evidence packages remain unchanged so their recorded checksums stay meaningful.
+
+Fork branch `deploy/robweb-20261023` additions (status as of 2026-10-23; upstream PRs open, not merged):
+
+| Item | Current status | Resolution |
+|---|---|---|
+| Issue #65 terminal JSON `"error": null` read as failure | Fixed on the fork (PR #66) | Successful exit status with a null error is a success; masked exit status and whole-word failure signals are rejected. |
+| Test launcher / runner misclassification (`uv run`, `uvx`, `poetry run`, virtualenv `pytest`, …) | Fixed on the fork (PRs #72, #73) | Launcher prefixes and additional runners are recognised as test invocations; previously these caused false "no tests ran" completion blocks in intervening modes. |
+| Shadow mode steering the turn on completion blocks | Fixed on the fork (PR #67) | `nervous_mode=shadow` logs `progress_completion_blocked` with `shadow=true` and injects nothing. |
+| Issue #60 hook-local fallback pinned as canonical Kanban task | Partially fixed on the fork (PR #68) | The fallback identifier is no longer written to the environment. Gateway processes still write one `autobind_task_missing` diagnostic per tool call; follow-up pending. |
+| Provider outage silently disabling supervision | Fixed on the fork (PR #71 + `719a8a1`) | Deterministic admission risk floor keeps risky turns at `WATCH`; typed connection errors trip a circuit breaker with fixed, privacy-safe error categories. |
+| Unknown-tool risk alarms for read-only commands | Fixed on the fork (`ac9cf86`) | Content-aware classification of terminal/code tools; privacy-safe replay of real shadow logs showed a large drop in `unknown` classifications and more low-risk recognition. |
+| `historical_samples` stuck at 0 in shadow mode | Fixed on the fork (`aef26bd`) | Shadow interventions are auto-labelled from later turn behaviour, so the local learner receives outcome rows without hand labels. |
