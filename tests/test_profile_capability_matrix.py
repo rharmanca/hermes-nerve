@@ -66,16 +66,16 @@ EXPECTED_TOOLS_NO_REMOTE = {
     "fat_cat": {
         "nerve_decide", "nerve_rank", "nerve_verify", "nerve_assess",
         "nerve_context_curate", "nerve_context_rehydrate", "nerve_stats",
-        "nerve_nervous_event", "nerve_supervise_card", "nerve_work_event",
+        "nerve_nervous_event", "nerve_feedback", "nerve_supervise_card", "nerve_work_event",
         "nerve_work_status",
     },
     "operator": {
         "nerve_decide", "nerve_rank", "nerve_verify", "nerve_assess",
         "nerve_context_curate", "nerve_context_rehydrate", "nerve_stats",
-        "nerve_nervous_event",
+        "nerve_nervous_event", "nerve_feedback",
     },
     "lean": {
-        "nerve_decide", "nerve_stats", "nerve_nervous_event",
+        "nerve_decide", "nerve_stats", "nerve_nervous_event", "nerve_feedback",
         "nerve_supervise_card", "nerve_work_event", "nerve_work_status",
     },
     "marie_kondo": {

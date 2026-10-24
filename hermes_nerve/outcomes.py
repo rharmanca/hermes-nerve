@@ -218,14 +218,15 @@ class HistoricalOutcomeModel:
         decision_rows = {str(r.get("event_id") or ""): r for r in rows if r.get("record_type") == "decision"}
         labels: list[int] = []
         for row in rows:
-            if row.get("record_type") != "outcome" or "useful_disagreement" not in row:
+            useful = row.get("useful_disagreement")
+            if row.get("record_type") != "outcome" or useful is not True and useful is not False:
                 continue
             prior = decision_rows.get(str(row.get("event_id") or ""), {})
             if event_type and str(prior.get("decision_type") or "") != event_type:
                 continue
             if objective_type and str(prior.get("objective_type") or "") not in {"", objective_type}:
                 continue
-            labels.append(1 if row.get("useful_disagreement") is True else 0)
+            labels.append(1 if useful is True else 0)
         if len(labels) < self.min_samples:
             return None, len(labels)
         return (sum(labels) + 1.0) / (len(labels) + 2.0), len(labels)

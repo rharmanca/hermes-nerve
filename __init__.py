@@ -202,6 +202,7 @@ def _register_legacy(ctx):
         ("nerve_context_rehydrate", schemas.NERVE_CONTEXT_REHYDRATE, tools.nerve_context_rehydrate),
         ("nerve_stats", schemas.NERVE_STATS, tools.nerve_stats),
         ("nerve_nervous_event", schemas.NERVE_NERVOUS_EVENT, tools.nerve_nervous_event),
+        ("nerve_feedback", schemas.NERVE_FEEDBACK, tools.nerve_feedback),
         ("nerve_supervise_card", schemas.NERVE_SUPERVISE_CARD, work_tools.nerve_supervise_card),
         ("nerve_work_event", schemas.NERVE_WORK_EVENT, work_tools.nerve_work_event),
         ("nerve_work_status", schemas.NERVE_WORK_STATUS, work_tools.nerve_work_status),
@@ -484,6 +485,8 @@ def _register_profile(ctx):
     # enable durable Assistant loops without enabling the Nervous subsystem.
     if policy.enabled("nervous") or policy.enabled("assistant_loops"):
         registrations.append(("nerve_nervous_event",schemas.NERVE_NERVOUS_EVENT,tools.nerve_nervous_event))
+    if policy.enabled("nervous"):
+        registrations.append(("nerve_feedback",schemas.NERVE_FEEDBACK,tools.nerve_feedback))
     if policy.enabled("work_supervision"):
         registrations += [
             ("nerve_supervise_card",schemas.NERVE_SUPERVISE_CARD,work_tools.nerve_supervise_card),

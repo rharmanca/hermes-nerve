@@ -203,6 +203,23 @@ def nerve_nervous_event(args: dict, **kwargs) -> str:
     except Exception as exc:
         return _error(exc)
 
+def nerve_feedback(args: dict, **kwargs) -> str:
+    """Record a content-free good/bad verdict for an optional turn id."""
+    try:
+        feedback = nervous.record_feedback(
+            str((args or {}).get("verdict") or ""),
+            turn_id=str((args or {}).get("turn_id") or kwargs.get("turn_id") or ""),
+            session_id=str(kwargs.get("session_id") or ""),
+        )
+        return _ok({
+            "contract": "hermes/nerve-feedback/v1",
+            "feedback": feedback,
+            "execution": execution_provenance(live_provider_call=False, transport="local-outcome-ledger"),
+        })
+    except Exception as exc:
+        return _error(exc)
+
+
 def _compact_receipts(report: dict) -> dict:
     return {key: report.get(key) for key in (
         "receipt_count", "provider_calls", "by_contract", "by_model", "total_cost",
