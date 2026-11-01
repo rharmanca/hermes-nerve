@@ -236,6 +236,7 @@ def _register_legacy(ctx):
         policy_memory_ttl_seconds=ctx.get_config("nervous_policy_memory_ttl_seconds", 3600),
         policy_memory_path=ctx.get_config("nervous_policy_memory_path", ""),
         repeated_failure_local_replan_at=ctx.get_config("nervous_repeated_failure_local_replan_at", 3),
+        external_write_patterns=ctx.get_config("nervous_external_write_patterns", None),
     )
     context.configure(
         preview_chars=ctx.get_config("context_preview_chars", 1200),
@@ -532,6 +533,7 @@ def _register_profile(ctx):
         policy_memory_path=get("nervous_policy_memory_path",""),
         admission_risk_floor=bool(get("nervous_admission_risk_floor",True)),
         repeated_failure_local_replan_at=get("nervous_repeated_failure_local_replan_at",3),
+        external_write_patterns=get("nervous_external_write_patterns",None),
     )
     context.configure(
         preview_chars=get("context_preview_chars",1200),

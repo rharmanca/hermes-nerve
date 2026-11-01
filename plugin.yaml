@@ -89,7 +89,7 @@ config_schema:
   receipt_detail: {type: str, default: "hash"}
   nervous_enabled: {type: bool, default: true}
   nervous_turn_admission: {type: bool, default: true}
-  nervous_mode: {type: str, default: "correct_next"}
+  nervous_mode: {type: str, default: "correct_next", description: "shadow | correct_next | precommit | nudge_only (warn only, never blocks; misspelled nudge values fail safe to shadow)."}
   nervous_admission_risk_floor: {type: bool, default: true}
   nervous_challenge_confidence: {type: float, default: 0.86}
   nervous_call_threshold: {type: float, default: 0.58}
@@ -100,6 +100,7 @@ config_schema:
   nervous_local_learning: {type: bool, default: true}
   nervous_local_learning_min_samples: {type: int, default: 8}
   nervous_repeated_failure_local_replan_at: {type: int, default: 3}
+  nervous_external_write_patterns: {type: list, default: [], description: "Regex list of tool names whose successful calls count as task progress (INF-31). Empty uses built-in defaults; \"off\" disables."}
   nervous_policy_memory_enabled: {type: bool, default: true, description: "Remember only runtime-wide unattended tool-policy blocks and reject them before execution."}
   nervous_policy_memory_ttl_seconds: {type: int, default: 3600, description: "TTL for runtime-wide tool-policy memory; runtime mode/config changes invalidate entries independently."}
   nervous_policy_memory_path: {type: str, default: "", description: "Optional policy-memory JSONL path; defaults to the active Hermes profile nerve directory."}

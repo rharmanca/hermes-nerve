@@ -994,6 +994,21 @@ def _make_client(**kwargs):
     return JevClient(**kwargs)
 
 
+_NUDGE_ONLY_CALLBACKS = frozenset({"nervous", "action_gate"})
+
+
+def _nudge_only() -> bool:
+    """True when Nerve supervision runs in record-only nudge_only mode."""
+    try:
+        try:
+            from . import nervous as _nervous
+        except ImportError:
+            from hermes_nerve import nervous as _nervous  # type: ignore
+        return _nervous.supervision_mode() == "nudge_only"
+    except Exception:
+        return False
+
+
 def instrument_pre_tool_chain(callbacks, sink):
     """Wrap pre_tool_call callbacks with per-callback timing and failure policy.
 
@@ -1049,6 +1064,21 @@ def instrument_pre_tool_chain(callbacks, sink):
                 })
             except Exception:
                 pass  # telemetry must never break the control chain
+            if name in _NUDGE_ONLY_CALLBACKS and (directive is not None or critical) and _nudge_only():
+                if directive is not None or outcome.startswith("exception"):
+                    try:
+                        sink({
+                            "schema": "nerve-pretool-trace/v1",
+                            "callback": str(name)[:64],
+                            "outcome": "suppressed:nudge_only",
+                            "would_action": str((directive or {}).get("action") or outcome)[:32],
+                            "tool_name": str(kwargs.get("tool_name") or "")[:64],
+                            "session_id": str(kwargs.get("session_id") or "")[:64],
+                            "tool_call_id": str(kwargs.get("tool_call_id") or "")[:64],
+                        })
+                    except Exception:
+                        pass
+                continue
             if directive is not None:
                 return directive
             if outcome.startswith("exception") and critical:

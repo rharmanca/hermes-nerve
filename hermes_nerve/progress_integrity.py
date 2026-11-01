@@ -636,3 +636,50 @@ def _looks_like_scratch(path: str) -> bool:
         return check.returncode != 0
     except (OSError, subprocess.TimeoutExpired):
         return True
+
+
+# INF-31: successful external/API/MCP writes (notes, mail drafts, Linear/Kanban
+# writes, HTTP POST/PUT ...) are real task progress even though they touch no
+# local file. Matching is on the tool NAME only (never arguments or content).
+DEFAULT_EXTERNAL_WRITE_VERBS = (
+    "create", "update", "send", "post", "put", "patch", "draft", "save", "write",
+    "append", "edit", "insert", "upsert", "comment", "set", "add", "publish",
+    "reply", "submit", "upload", "attach", "move", "rename", "complete", "mark",
+)
+_NAME_TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
+
+
+def compile_external_write_patterns(value: Any = None) -> "re.Pattern[str] | None":
+    """Build the tool-name matcher. ``None``/empty -> defaults; ``"off"`` -> disabled.
+
+    ``value`` may be a list of regexes or a comma-separated string. Each regex is
+    matched (``re.search``) against the lower-cased tool name.
+    """
+    if value is None or value == "" or value == []:
+        verbs = "|".join(DEFAULT_EXTERNAL_WRITE_VERBS)
+        return re.compile(rf"(?:^|[^a-z0-9])(?:{verbs})(?:$|[^a-z0-9])")
+    if isinstance(value, str):
+        if value.strip().lower() in {"off", "none", "false"}:
+            return None
+        value = [v.strip() for v in value.split(",") if v.strip()]
+    try:
+        parts = [str(v) for v in value if str(v).strip()]
+        return re.compile("|".join(f"(?:{p})" for p in parts)) if parts else None
+    except (TypeError, re.error):
+        return compile_external_write_patterns(None)
+
+
+def external_write_succeeded(tool_name: str, pattern: "re.Pattern[str] | None") -> bool:
+    """True when a non-local tool name looks like an external write.
+
+    The caller supplies success. Local file/terminal tools keep their existing
+    path-relevance rules and are never counted here.
+    """
+    if pattern is None:
+        return False
+    name = str(tool_name or "").strip().lower()
+    if not name or name == "terminal" or name.startswith(("nerve_", "jev_")):
+        return False
+    if any(name in aliases for aliases in TOOL_ALIASES.values()):
+        return False
+    return bool(pattern.search(name))

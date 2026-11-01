@@ -43,6 +43,8 @@ from .progress_integrity import (
     environment_action,
     environment_failure,
     mutation_is_relevant,
+    compile_external_write_patterns,
+    external_write_succeeded,
     requested_paths as progress_requested_paths,
     test_succeeded,
     test_result_masked,
@@ -99,7 +101,10 @@ def admission_risk_floor(prompt: str) -> str:
                 return "WATCH"
     return ""
 CONTROL_CHOICES = ["CONTINUE", "GATHER_EVIDENCE", "RETRY", "REPLAN", "ESCALATE"]
-SUPERVISION_MODES = {"shadow", "correct_next", "precommit"}
+SUPERVISION_MODES = {"shadow", "correct_next", "precommit", "nudge_only"}
+# nudge_only: correct_next challenge injection, but every block/continue
+# directive is recorded as a nudge and never returned to Hermes.
+RECORD_ONLY_MODES = {"shadow", "nudge_only"}
 BLOCKING_CONTROLS = {"GATHER_EVIDENCE", "REPLAN", "ESCALATE"}
 
 _TRANSIENT_FAILURE_MARKERS = (
@@ -263,6 +268,7 @@ class TurnState:
     tool_actions: int = 0
     mutation_attempts: int = 0
     relevant_mutation_attempts: int = 0
+    external_write_successes: int = 0
     verified_test_passes: int = 0
     progress_challenge_issued: bool = False
     environment_failure_actions: deque = field(default_factory=lambda: deque(maxlen=8))
@@ -285,6 +291,7 @@ class NervousSystem:
         self._outcomes = OutcomeStore()
         self._historical_model = HistoricalOutcomeModel(self._outcomes, self._config.local_learning_min_samples)
         self._policy_memory: PolicyMemory | None = None
+        self._external_write_re = compile_external_write_patterns(None)
 
     def configure(self, **kwargs: Any) -> None:
         with self._lock:
@@ -295,7 +302,16 @@ class NervousSystem:
                 cfg.admission_enabled = bool(kwargs["admission_enabled"])
             if "mode" in kwargs:
                 mode = str(kwargs["mode"] or "").strip().lower()
-                cfg.mode = mode if mode in SUPERVISION_MODES else "correct_next"
+                if mode in SUPERVISION_MODES:
+                    cfg.mode = mode
+                elif "nudge" in mode:
+                    # A misspelled nudge-only value must never fall back to a
+                    # blocking mode: fail safe toward record-only shadow.
+                    cfg.mode = "shadow"
+                else:
+                    cfg.mode = "correct_next"
+            if "external_write_patterns" in kwargs:
+                self._external_write_re = compile_external_write_patterns(kwargs["external_write_patterns"])
             for key in ("challenge_confidence", "call_threshold"):
                 if key in kwargs:
                     try:
@@ -588,6 +604,15 @@ class NervousSystem:
         self._outcomes.append(row)
         self._log("control_lifecycle", row)
 
+    def _local_challenge_version(self, state: TurnState) -> str:
+        # Local challenges are raised while observing an event, before that
+        # event's state version is committed, so they would be dropped as
+        # stale on delivery. Under nudge_only the prose nudge is the only
+        # output, so leave it unversioned to guarantee delivery.
+        if self._config.mode == "nudge_only":
+            return ""
+        return state.last_state_version
+
     def _activate_control(self, state: TurnState, directive: ControlDirective) -> None:
         if self._config.mode == "shadow":
             self._metrics["controls_shadow_only"] += 1
@@ -627,7 +652,7 @@ class NervousSystem:
             created_at=self._now(),
             failure_fingerprint=episode.fingerprint,
             action_fingerprint=episode.action_fingerprint,
-            state_version=state.last_state_version,
+            state_version=self._local_challenge_version(state),
         )
         episode.last_control = "REPLAN"
         episode.last_decision_id = decision_id
@@ -677,7 +702,7 @@ class NervousSystem:
             decision_id=decision_id,
             turn_id=state.turn_id,
             event_id=episode.last_event_id,
-            state_version=state.last_state_version,
+            state_version=self._local_challenge_version(state),
             decision_version=decision_id,
             hermes_decision="RETRY_SAME_ACTION",
             jev_decision="REPLAN",
@@ -711,7 +736,7 @@ class NervousSystem:
             decision_id=decision_id,
             turn_id=state.turn_id,
             event_id=event_id,
-            state_version=state.last_state_version,
+            state_version=self._local_challenge_version(state),
             decision_version=decision_id,
             hermes_decision="CONTINUE_INVESTIGATION",
             jev_decision="REPLAN",
@@ -1009,6 +1034,10 @@ class NervousSystem:
                     state.mutation_attempts += 1
                     if mutation_is_relevant(tool_name, args, state.requested_paths):
                         state.relevant_mutation_attempts += 1
+                elif not is_failure and external_write_succeeded(tool_name, self._external_write_re):
+                    # INF-31: a successful external/API/MCP write is real progress.
+                    state.external_write_successes += 1
+                    state.relevant_mutation_attempts += 1
                 elif (kind == "test" and test_succeeded(status, result, error_message)
                       and not test_result_masked(str((args or {}).get("command") or ""))):
                     state.verified_test_passes += 1
@@ -1125,6 +1154,28 @@ class NervousSystem:
         return self.emit_event(event)
 
     def before_tool_call(self, **kwargs: Any) -> dict[str, Any] | None:
+        directive = self._before_tool_call(**kwargs)
+        if directive is not None and self._config.mode == "nudge_only":
+            return self._record_nudge("pre_tool", directive, kwargs)
+        return directive
+
+    def _enforce_label(self) -> str:
+        return "nudged" if self._config.mode == "nudge_only" else "enforced"
+
+    def _record_nudge(self, seam: str, directive: dict[str, Any], kwargs: dict[str, Any]) -> None:
+        """nudge_only: record the would-be directive; never return it to Hermes."""
+        with self._lock:
+            self._metrics["nudge_only_suppressed"] += 1
+        self._log("nudge_only_suppressed", {
+            "seam": seam,
+            "would_action": str(directive.get("action") or ""),
+            "tool_name": str(kwargs.get("tool_name") or "")[:64],
+            "turn_id": str(kwargs.get("turn_id") or ""),
+            "session_id": str(kwargs.get("session_id") or ""),
+        })
+        return None
+
+    def _before_tool_call(self, **kwargs: Any) -> dict[str, Any] | None:
         """Local control-lease enforcement at Hermes' pre-tool execution seam.
 
         No provider call occurs here. This is the piece v0.2.0 lacked: a remote
@@ -1155,7 +1206,7 @@ class NervousSystem:
             with self._lock:
                 self._metrics["policy_memory_prevented_calls"] += 1
                 self._metrics["policy_memory_hits"] += 1
-            self._log("policy_memory_enforced", {
+            self._log("policy_memory_" + self._enforce_label(), {
                 "tool_name": tool_name,
                 "reason": memory.reason,
                 "evidence_fingerprint": memory.evidence_fingerprint,
@@ -1198,7 +1249,7 @@ class NervousSystem:
                     self._metrics["controls_enforced"] += 1
                     self._metrics["environment_thrash_prevented_calls"] += 1
                     self._record_control_lifecycle(
-                        state, directive, stage="next_action", disposition="enforced",
+                        state, directive, stage="next_action", disposition=self._enforce_label(),
                         proposed_action_fingerprint=proposed_fp, attempted_override=True,
                     )
                     return {
@@ -1228,7 +1279,7 @@ class NervousSystem:
                 self._metrics["controls_enforced"] += 1
                 self._metrics["progress_stall_prevented_calls"] += 1
                 self._record_control_lifecycle(
-                    state, directive, stage="next_action", disposition="enforced",
+                    state, directive, stage="next_action", disposition=self._enforce_label(),
                     proposed_action_fingerprint=proposed_fp, attempted_override=True,
                 )
                 return {
@@ -1246,7 +1297,7 @@ class NervousSystem:
                 if directive.failure_fingerprint in state.failure_episodes:
                     state.failure_episodes[directive.failure_fingerprint].blocked_attempts += 1
                 self._record_control_lifecycle(
-                    state, directive, stage="next_action", disposition="enforced",
+                    state, directive, stage="next_action", disposition=self._enforce_label(),
                     proposed_action_fingerprint=proposed_fp, attempted_override=True,
                 )
                 message = (
@@ -1254,7 +1305,7 @@ class NervousSystem:
                     "that already failed. Choose a materially different diagnostic/recovery step"
                     + (" or escalate." if directive.control == "ESCALATE" else ".")
                 )
-                self._log("control_enforced", {**directive.as_dict(), "tool_name": tool_name, "proposed_action_fingerprint": proposed_fp})
+                self._log("control_" + self._enforce_label(), {**directive.as_dict(), "tool_name": tool_name, "proposed_action_fingerprint": proposed_fp})
                 return {"action": "block", "message": message}
 
             # Any materially different tool action demonstrates that the replan /
@@ -1571,6 +1622,12 @@ class NervousSystem:
         return str(result) + "\n\n<JEV_NERVOUS_SYSTEM>\n" + json.dumps(payload, sort_keys=True) + "\n</JEV_NERVOUS_SYSTEM>"
 
     def completion_gate(self, **kwargs: Any) -> dict[str, str] | None:
+        directive = self._completion_gate(**kwargs)
+        if directive is not None and self._config.mode == "nudge_only":
+            return self._record_nudge("completion", directive, kwargs)
+        return directive
+
+    def _completion_gate(self, **kwargs: Any) -> dict[str, str] | None:
         state = self._resolve_turn(turn_id=str(kwargs.get("turn_id") or ""), session_id=str(kwargs.get("session_id") or ""))
         if state is None or state.admission not in {"ON", "WATCH"}:
             return None
@@ -1593,7 +1650,7 @@ class NervousSystem:
                 reason = "verification reports no task-relevant changed path"
             else:
                 reason = "the requested verification/test has not passed"
-            self._log("progress_completion_blocked", {
+            self._log("progress_completion_nudged" if self._config.mode == "nudge_only" else "progress_completion_blocked", {
                 "turn_id": state.turn_id,
                 "session_id": state.session_id,
                 "tool_actions": state.tool_actions,
@@ -1603,7 +1660,7 @@ class NervousSystem:
                 "requested_paths": list(state.requested_paths),
                 "changed_paths": changed_paths,
                 "reason": reason,
-                "shadow": self._config.mode == "shadow",
+                "shadow": self._config.mode in RECORD_ONLY_MODES,
             })
             if self._config.mode == "shadow":
                 # Shadow mode observes only: record the would-be block, never steer the turn.
@@ -1706,6 +1763,9 @@ class NervousSystem:
                 "active_control": state.active_control.as_dict() if state.active_control else None,
                 "mode": self._config.mode,
             }
+
+    def supervision_mode(self) -> str:
+        return self._config.mode
 
     def drain(self, timeout: float = 5.0) -> bool:
         """Wait for already-queued background work; intended for tests and diagnostics."""
@@ -1928,6 +1988,10 @@ def on_session_end(**kwargs: Any) -> None:
 
 def emit_event(event: dict[str, Any]) -> dict[str, Any]:
     return _default.emit_event(event)
+
+
+def supervision_mode() -> str:
+    return _default.supervision_mode()
 
 
 def status(turn_id: str = "", session_id: str = "") -> dict[str, Any]:
