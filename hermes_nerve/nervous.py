@@ -34,6 +34,7 @@ from .engine import DecisionEngine
 from . import experience
 from .jsonl import append_jsonl
 from .outcomes import HistoricalOutcomeModel, OutcomeStore
+from . import warning_outcomes
 from .paths import hermes_home
 from .privacy import canonical_hash, redact
 from .policy_memory import PolicyMemory, tool_wide_policy_reason
@@ -608,6 +609,10 @@ class NervousSystem:
             return "consequence-boundary"
         return "material-state-change"
 
+    def _append_outcome(self, row: dict[str, Any]) -> None:
+        self._outcomes.append(row)
+        warning_outcomes.tracker().observe(row)
+
     def _record_control_lifecycle(
         self,
         state: TurnState,
@@ -633,7 +638,7 @@ class NervousSystem:
             "attempted_override": attempted_override,
             "timestamp": self._now(),
         }
-        self._outcomes.append(row)
+        self._append_outcome(row)
         self._log("control_lifecycle", row)
 
     def _local_challenge_version(self, state: TurnState) -> str:
@@ -690,7 +695,7 @@ class NervousSystem:
         episode.last_decision_id = decision_id
         self._metrics[metric] += 1
         self._metrics["control_replan"] += 1
-        self._outcomes.append({
+        self._append_outcome({
             "record_type": "decision",
             "decision_id": decision_id,
             "turn_id": state.turn_id,
@@ -863,7 +868,7 @@ class NervousSystem:
                 self._metrics["nerve_internal_seen"] += 1
                 self._metrics["nerve_internal_suppressed"] += 1
         if clean["type"] in {"OUTCOME", "CHALLENGE_OUTCOME"}:
-            self._outcomes.append({"record_type": "outcome", **clean})
+            self._append_outcome({"record_type": "outcome", **clean})
             if experience.enabled():
                 claim_id = str(clean.get("claim_id") or "").strip()
                 if claim_id and "successful" in clean:
@@ -1205,6 +1210,13 @@ class NervousSystem:
             "turn_id": str(kwargs.get("turn_id") or ""),
             "session_id": str(kwargs.get("session_id") or ""),
         })
+        warning_outcomes.tracker().record(
+            turn_id=kwargs.get("turn_id"),
+            decision_type=f"nudge_{seam}",
+            rule=str(directive.get("rule") or directive.get("action") or ""),
+            stage=seam,
+            outcome="nudged",
+        )
         return None
 
     def _before_tool_call(self, **kwargs: Any) -> dict[str, Any] | None:
@@ -1457,7 +1469,7 @@ class NervousSystem:
                 "action_fingerprint": str(event.get("action_fingerprint") or ""),
                 "stale": False,
             }
-            self._outcomes.append(decision_row)
+            self._append_outcome(decision_row)
 
             if should_challenge:
                 directive = ControlDirective(
@@ -1704,6 +1716,14 @@ class NervousSystem:
                 # suppressed by completion_gate() and logged as a nudge.
                 with self._lock:
                     self._metrics["progress_completion_block_shadowed"] += 1
+            if self._config.mode in RECORD_ONLY_MODES:
+                warning_outcomes.tracker().record(
+                    turn_id=state.turn_id,
+                    decision_type="completion_integrity",
+                    rule=warning_outcomes.COMPLETION_REASON_CODES.get(reason, "completion_other"),
+                    stage="completion",
+                    outcome="nudged" if self._config.mode == "nudge_only" else "shadow_recorded",
+                )
             return {
                 "action": "continue",
                 "message": (

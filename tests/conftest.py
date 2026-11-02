@@ -86,6 +86,7 @@ def _isolate_gate_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_NERVE_NERVOUS_EVENTS", str(tmp_path / "nervous-events.jsonl"))
     monkeypatch.setenv("HERMES_NERVE_OUTCOMES", str(tmp_path / "outcomes.jsonl"))
+    monkeypatch.setenv("HERMES_NERVE_WARNING_OUTCOMES", str(tmp_path / "warning-outcomes.jsonl"))
     yield
 
 
