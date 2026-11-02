@@ -1,6 +1,6 @@
 """Dependency-free Jev client supporting OpenRouter, TypeSafe direct, and OpenCode Zen."""
 from __future__ import annotations
-import json, os, time, urllib.error, urllib.request, urllib.parse
+import http.client, json, os, threading, time, urllib.error, urllib.request, urllib.parse
 from dataclasses import dataclass
 from typing import Any, Callable
 OPENROUTER_BASE_URL="https://openrouter.ai"; OPENROUTER_MODEL="typesafe/jev-1.14"; OPENROUTER_PATH="/api/alpha/decisions"
@@ -12,6 +12,40 @@ DEFAULT_TIMEOUT=10.0
 _configured_provider=_configured_base_url=_configured_model=_configured_typesafe_model=_configured_opencode_model=None
 _configured_timeout=None
 class JevError(RuntimeError): pass
+class JevConnectionError(JevError):
+ """Transport-level failure (DNS, connect, TLS, timeout, reset) or an open circuit.
+
+ Only this class feeds the circuit breaker; HTTP status errors and malformed responses
+ mean the provider answered and are deliberately excluded."""
+_TRANSPORT_FAILURES=(urllib.error.URLError,OSError,http.client.HTTPException)
+# Judge-outage fast-fail (rob fork; ported from deploy/robweb-20261023 9d18cc6+719a8a1).
+# After BREAKER_THRESHOLD consecutive connection failures/timeouts the provider is treated
+# as down for BREAKER_COOLDOWN seconds and calls fail fast, so an outage costs one timeout
+# per cooldown window instead of one per hook call. Fail-fast raises the same error class
+# callers already handle for an outage, so it never adds blocking.
+def _env_num(name,default,cast):
+ try: return cast(os.getenv(name,"") or default)
+ except (TypeError,ValueError): return default
+BREAKER_THRESHOLD=max(1,_env_num("HERMES_NERVE_BREAKER_THRESHOLD",2,int))
+BREAKER_COOLDOWN=min(3600.0,max(0.0,_env_num("HERMES_NERVE_BREAKER_COOLDOWN",60.0,float)))
+_breaker_failures=0
+_breaker_open_until=0.0
+_breaker_lock=threading.Lock()
+def breaker_state()->dict:
+ with _breaker_lock: return {"failures":_breaker_failures,"open":time.monotonic()<_breaker_open_until,"open_for_s":max(0.0,_breaker_open_until-time.monotonic())}
+def reset_breaker()->None:
+ global _breaker_failures,_breaker_open_until
+ with _breaker_lock: _breaker_failures=0; _breaker_open_until=0.0
+def _breaker_check()->None:
+ with _breaker_lock:
+  remaining=_breaker_open_until-time.monotonic()
+  if remaining>0: raise JevConnectionError(f"Jev provider circuit open after {_breaker_failures} consecutive connection failures; retrying in {remaining:.0f}s")
+def _breaker_record(ok:bool)->None:
+ global _breaker_failures,_breaker_open_until
+ with _breaker_lock:
+  if ok: _breaker_failures=0; _breaker_open_until=0.0; return
+  _breaker_failures+=1
+  if _breaker_failures>=BREAKER_THRESHOLD: _breaker_open_until=time.monotonic()+BREAKER_COOLDOWN
 
 import contextlib as _contextlib, contextvars as _contextvars
 _TIMEOUT_SCOPE: "_contextvars.ContextVar[float|None]"=_contextvars.ContextVar("nerve_client_timeout_scope",default=None)
@@ -58,8 +92,12 @@ def _credit_hint(code:int)->str:
  try: has_ts=bool(_resolve_secret("TYPESAFE_API_KEY"))
  except Exception: has_ts=False
  return " (hint: TYPESAFE_API_KEY is set; to bill TypeSafe directly set plugin setting jev_provider: typesafe)" if has_ts else ""
-def configure(*,provider:Any=None,base_url:Any=None,model:Any=None,typesafe_model:Any=None,opencode_model:Any=None,timeout:Any=None)->None:
- global _configured_provider,_configured_base_url,_configured_model,_configured_typesafe_model,_configured_opencode_model,_configured_timeout
+def configure(*,provider:Any=None,base_url:Any=None,model:Any=None,typesafe_model:Any=None,opencode_model:Any=None,timeout:Any=None,breaker_threshold:Any=None,breaker_cooldown:Any=None)->None:
+ global _configured_provider,_configured_base_url,_configured_model,_configured_typesafe_model,_configured_opencode_model,_configured_timeout,BREAKER_THRESHOLD,BREAKER_COOLDOWN
+ try:
+  if breaker_threshold is not None: BREAKER_THRESHOLD=max(1,int(breaker_threshold))
+  if breaker_cooldown is not None: BREAKER_COOLDOWN=min(3600.0,max(0.0,float(breaker_cooldown)))
+ except (TypeError,ValueError): pass
  p=str(provider or "").strip().lower(); _configured_provider=p if p in SUPPORTED_PROVIDERS else None
  b=str(base_url or "").strip(); _configured_base_url=b.rstrip("/") if b else None
  m=str(model or "").strip(); _configured_model=m or None
@@ -99,12 +137,22 @@ class JevClient:
    hint=_credit_hint(exc.code) if urllib.parse.urlsplit(url).hostname=="openrouter.ai" else ""
    exc.close()
    raise JevError(f"Jev API returned HTTP {exc.code}"+hint) from exc
-  except (urllib.error.URLError,TimeoutError) as exc: raise JevError(f"Jev API connection failed: {exc}") from exc
+  except (urllib.error.URLError,TimeoutError) as exc: raise JevConnectionError(f"Jev API connection failed: {exc}") from exc
+  except _TRANSPORT_FAILURES as exc: raise JevConnectionError(f"Jev API connection failed: {type(exc).__name__}") from exc
  def system_one(self,*,state:Any,questions:dict[str,dict[str,Any]],model:str|None=None)->JevResponse:
   if not questions: raise JevError("At least one question is required")
   payload={"state":state,"model":model or self.model,"questions":questions}; body=json.dumps(payload,separators=(",",":"),ensure_ascii=False,default=str).encode()
   headers={"Authorization":f"Bearer {self.api_key}","Accept":"application/json","Content-Type":"application/json","User-Agent":"hermes-nerve/0.3.2.1"}
-  started=time.monotonic(); raw_result=self._transport(self.base_url+self.path,headers,body,self.timeout); latency_ms=(time.monotonic()-started)*1000
+  _breaker_check(); started=time.monotonic()
+  try: raw_result=self._transport(self.base_url+self.path,headers,body,self.timeout)
+  except JevConnectionError:
+   _breaker_record(False); raise
+  except JevError as exc:
+   if "connection failed" in str(exc): _breaker_record(False)
+   raise
+  except (urllib.error.URLError,TimeoutError,http.client.HTTPException,ConnectionError) as exc:
+   _breaker_record(False); raise JevConnectionError(f"Jev API connection failed: {type(exc).__name__}") from exc
+  _breaker_record(True); latency_ms=(time.monotonic()-started)*1000
   if not isinstance(raw_result,tuple) or len(raw_result) not in {2,3}: raise JevError("Jev transport returned an invalid response tuple")
   status,raw=raw_result[0],raw_result[1]; response_headers=raw_result[2] if len(raw_result)==3 and isinstance(raw_result[2],dict) else {}; response_headers={str(k).lower():str(v) for k,v in response_headers.items()}
   if isinstance(status,bool) or not isinstance(status,(int,str)): raise JevError("Jev transport returned an invalid HTTP status")

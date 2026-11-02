@@ -101,3 +101,13 @@ def _nerve_p0_isolation():
         advisory.reset_for_tests()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_client_breaker():
+    """Judge-outage fast-fail breaker is process-global; reset it per test."""
+    from hermes_nerve import client
+
+    client.reset_breaker()
+    yield
+    client.reset_breaker()
