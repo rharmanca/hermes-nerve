@@ -80,6 +80,12 @@ def _isolate_host_runtime_env(monkeypatch):
 def _isolate_gate_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_NERVE_GATE_EVENTS", str(tmp_path / "gate-events.jsonl"))
     monkeypatch.setenv("HERMES_NERVE_PREFERENCES", str(tmp_path / "preferences.json"))
+    # Never let a test fall back to the caller's real Hermes home.
+    home = tmp_path / "hermes-home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_NERVE_NERVOUS_EVENTS", str(tmp_path / "nervous-events.jsonl"))
+    monkeypatch.setenv("HERMES_NERVE_OUTCOMES", str(tmp_path / "outcomes.jsonl"))
     yield
 
 
