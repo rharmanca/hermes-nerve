@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
 import os
 import queue
 import re
@@ -141,7 +142,7 @@ def _deterministic_failure_reason(status: str, result: str, error_message: str) 
 class NervousConfig:
     enabled: bool = True
     admission_enabled: bool = True
-    mode: str = "correct_next"
+    mode: str = "shadow"
     challenge_confidence: float = 0.86
     call_threshold: float = 0.58
     max_provider_calls_per_turn: int = 96
@@ -304,12 +305,13 @@ class NervousSystem:
                 mode = str(kwargs["mode"] or "").strip().lower()
                 if mode in SUPERVISION_MODES:
                     cfg.mode = mode
-                elif "nudge" in mode:
-                    # A misspelled nudge-only value must never fall back to a
-                    # blocking mode: fail safe toward record-only shadow.
-                    cfg.mode = "shadow"
                 else:
-                    cfg.mode = "correct_next"
+                    # Fail safe: an unknown or misspelled mode must never fall
+                    # back to a blocking mode; use record-only shadow.
+                    logging.getLogger(__name__).warning(
+                        "nerve_unknown_mode: %r is not a supervision mode; using shadow", mode
+                    )
+                    cfg.mode = "shadow"
             if "external_write_patterns" in kwargs:
                 self._external_write_re = compile_external_write_patterns(kwargs["external_write_patterns"])
             for key in ("challenge_confidence", "call_threshold"):

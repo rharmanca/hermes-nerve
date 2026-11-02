@@ -50,8 +50,23 @@ class ModeParsingTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(_system(value)._config.mode, "shadow")
 
-    def test_legacy_unknown_fallback_unchanged(self):
-        self.assertEqual(_system("bogus")._config.mode, "correct_next")
+    def test_unknown_mode_fails_safe_to_shadow_with_warning(self):
+        for value in ("bogus", "enforce", "", "block"):
+            with self.subTest(value=value):
+                with self.assertLogs("hermes_nerve.nervous", level="WARNING") as logs:
+                    self.assertEqual(_system(value)._config.mode, "shadow")
+                self.assertTrue(any("nerve_unknown_mode" in m for m in logs.output))
+
+    def test_default_mode_is_shadow(self):
+        self.assertEqual(nervous.NervousConfig().mode, "shadow")
+        system = nervous.NervousSystem(engine_factory=ScriptedEngine)
+        self.assertEqual(system._config.mode, "shadow")
+
+    def test_plugin_nervous_mode_defaults_are_shadow(self):
+        src = (Path(__file__).resolve().parents[1] / "__init__.py").read_text()
+        self.assertNotIn('"nervous_mode", "correct_next"', src)
+        self.assertNotIn('"nervous_mode","correct_next"', src)
+        self.assertEqual(src.count('home=%s'), 2)
 
 
 class NeverReturnsDirectiveTests(unittest.TestCase):

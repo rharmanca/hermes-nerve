@@ -35,6 +35,15 @@ except ImportError:
 
 logger=logging.getLogger("hermes_nerve")
 
+
+def _nerve_home_label() -> str:
+    """Hermes home this plugin instance is bound to (log attribution only)."""
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore
+        return str(get_hermes_home())
+    except Exception:
+        return os.environ.get("HERMES_HOME", "unknown")
+
 # Earlier Nerve docs and scripts wrote this namespace. Hermes reads a plugin's settings
 # only from its own entry, plugins.entries.<plugin id> (settings, then the older config
 # subtree), and the plugin id is "nerve".
@@ -222,7 +231,7 @@ def _register_legacy(ctx):
     nervous.configure(
         enabled=ctx.get_config("nervous_enabled", True),
         admission_enabled=ctx.get_config("nervous_turn_admission", True),
-        mode=ctx.get_config("nervous_mode", "correct_next"),
+        mode=ctx.get_config("nervous_mode", "shadow"),
         challenge_confidence=ctx.get_config("nervous_challenge_confidence", 0.86),
         call_threshold=ctx.get_config("nervous_call_threshold", 0.58),
         max_provider_calls_per_turn=ctx.get_config("nervous_max_provider_calls_per_turn", 96),
@@ -402,8 +411,8 @@ def _register_legacy(ctx):
             fallback_builtin=ctx.get_config("context_engine_fallback_builtin", True),
         ))
     logger.info(
-        "Nerve %s loaded from %s; tools=%d headless_worker=%s work_supervision=%s",
-        VERSION, Path(__file__).resolve().parent, 0 if headless_worker else len(registrations), headless_worker,
+        "Nerve %s loaded from %s; home=%s tools=%d headless_worker=%s work_supervision=%s",
+        VERSION, Path(__file__).resolve().parent, _nerve_home_label(), 0 if headless_worker else len(registrations), headless_worker,
         ctx.get_config("work_supervision_enabled", True),
     )
     if headless_worker:
@@ -519,7 +528,7 @@ def _register_profile(ctx):
     nervous.configure(
         enabled=policy.enabled("nervous") and bool(get("nervous_enabled",True)),
         admission_enabled=policy.enabled("nervous") and bool(profile_default("nervous_turn_admission",True,lean=False)),
-        mode=get("nervous_mode","correct_next"),
+        mode=get("nervous_mode","shadow"),
         challenge_confidence=get("nervous_challenge_confidence",0.86),
         call_threshold=get("nervous_call_threshold",0.58),
         max_provider_calls_per_turn=profile_default("nervous_max_provider_calls_per_turn",96,lean=12),
@@ -771,7 +780,7 @@ def _register_profile(ctx):
         if not shared["installed"]:
             logger.warning("Nerve profile %s enables Shared Context but HermesContextBus is not installed for this Hermes home",policy.profile)
 
-    logger.info("Nerve %s loaded; profile=%s tools=%d headless_worker=%s",VERSION,policy.profile,0 if headless_worker else len(registrations),headless_worker)
+    logger.info("Nerve %s loaded; home=%s profile=%s tools=%d headless_worker=%s",VERSION,_nerve_home_label(),policy.profile,0 if headless_worker else len(registrations),headless_worker)
     # Bounded, secret-free binding diagnostic: records only presence booleans and
     # resolved gate states. Never writes claim-lock/run-id VALUES or credentials.
     # Enabled only when HERMES_NERVE_BIND_DIAG names an output path.
