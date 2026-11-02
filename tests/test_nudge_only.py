@@ -146,6 +146,10 @@ class ScenarioTests(unittest.TestCase):
             # Completion integrity would force "continue" in correct_next.
             self.assertIsNone(system.completion_gate(turn_id="t1", coding=True, final_response="done"))
             self.assertIn("progress_completion_nudged", json.dumps(_events(td)))
+            # Scorecard/health accounting matches shadow's would-block counter.
+            self.assertEqual(system.quality_metrics().get("progress_completion_block_shadowed",
+                             system.report(recent_limit=0, include_recent=False, include_outcomes=False)
+                             ["metrics"].get("progress_completion_block_shadowed")), 1)
 
     def test_completion_integrity_continue_in_correct_next(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td, _env(td):

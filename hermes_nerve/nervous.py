@@ -1667,6 +1667,11 @@ class NervousSystem:
                 with self._lock:
                     self._metrics["progress_completion_block_shadowed"] += 1
                 return None
+            if self._config.mode == "nudge_only":
+                # Same record-only accounting as shadow; the directive below is
+                # suppressed by completion_gate() and logged as a nudge.
+                with self._lock:
+                    self._metrics["progress_completion_block_shadowed"] += 1
             return {
                 "action": "continue",
                 "message": (
